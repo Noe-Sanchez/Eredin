@@ -1,3 +1,3 @@
 # Eredin
 
-For now, custom low level control of multirotor drones in pure C.
+For now, custom low level control of multirotor drones C/C++.
