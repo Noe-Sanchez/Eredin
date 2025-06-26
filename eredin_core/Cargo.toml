@@ -1,0 +1,21 @@
+[package]
+name = "eredin_core"
+version = "0.1.0"
+edition = "2024"
+target = "thumbv7em-none-eabihf"
+rustflags = "-C link-arg=-Tlink.x"
+
+[dependencies]
+cortex-m = { version = "0.7" , features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+panic-halt = "1.0.0"
+#probe-rs = "0.29.0"
+
+stm32h7 = { version = "0.16.0", features = ["stm32h755cm7", "rt"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
