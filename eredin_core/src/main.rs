@@ -2,7 +2,14 @@
 #![no_main]
 #![no_std]
 
+#[cfg(feature = "run-hitl")]
+mod hitl_imports {
+  use panic_rtt_target as _;
+  //use rtt_target::{rprintln, rtt_init_print};
+}
+#[cfg(feature = "run-deploy")]
 use panic_halt as _;
+
 use rtic::app;
 use rtic_monotonics::systick::prelude::*;
 
@@ -42,6 +49,10 @@ mod app {
 
     #[init]
     fn init(con: init::Context) -> (Shared, Local){
+      #[cfg(feature = "run-hitl")]{
+        rtt_target::rtt_init_print!(); 
+        rtt_target::rprintln!("RTT> Running in HITL mode");
+      }
     
       let dp = con.device; 
       let cp = con.core;
@@ -89,6 +100,13 @@ mod app {
       let read_data: [u8; 64] = [0; 64]; 
       let idx: u8 = 0;
 
+      // Software task for rtt demo
+      #[cfg(feature = "run-hitl")]
+      {
+        rtt_target::rprintln!("RTT> Starting RTT task...");
+        task_rtt_count::spawn().ok();
+      }
+
       // Resources for tasks
       (
         Shared {
@@ -102,6 +120,16 @@ mod app {
           idx,
         },
       )
+  }
+    
+  #[task]
+  async fn task_rtt_count(_con: task_rtt_count::Context) {
+    let mut count = 0;
+    loop {
+      rtt_target::rprintln!("RTT> Count: {}", count);
+      count += 1;
+      Mono::delay(1000.millis()).await;
+    }
   }
 
   #[task(shared = [led_r])]
