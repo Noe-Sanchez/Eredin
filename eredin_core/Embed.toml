@@ -1,0 +1,14 @@
+# Embed.toml
+
+[default.general]
+chip = "STM32H743ZI"
+
+[default.rtt]
+enabled = true
+up_channels = [
+    { up = 0,   name = "Terminal", up_mode = "NoBlockSkip", channel = 0 }
+]
+down_channels = [
+    { down = 0, name = "Terminal", down_mode = "BlockIfFull", channel = 0 }
+]
+

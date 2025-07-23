@@ -25,5 +25,4 @@ panic = "abort"
 panic = "abort"
 
 [features]
-run-deploy = []
 run-hitl = []
