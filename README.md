@@ -38,3 +38,6 @@ sudo socat -d -d pty,raw,echo=0,link=/tmp/ttyV0 tcp:192.168.243.73:3333
 # Open tty 
 sudo tio /tmp/ttyV0 -b 115200
 ```
+
+### Troubleshooting
+* Probe-rs probe not found: Install [udev rules](https://probe.rs/docs/getting-started/probe-setup/#linux%3A-udev-rules)
