@@ -2,6 +2,7 @@
 #include <iostream>
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/Geometry>
+#include <eigen3/Eigen/QR>
 #include <math.h>
 
 #include "rclcpp/rclcpp.hpp"
@@ -41,13 +42,14 @@ class EController : public rclcpp::Node{
 
       kT = 8.54858e-6;
       //kQ = 1.6e-2;
-      kQ = 8.06428-5;
+      //kQ = 8.06428-5;
+      kQ = 8064000000.28;
       l  = 0.25;
 
       kp_lin << 0.5, 0.5, 16.5;
       kd_lin << 0.5, 0.5, 5.5;
-      kp_ang << 10.15, 10.15, 50.5;
-      kd_ang << 5.0, 5.0, 0.0;
+      kp_ang << 10.15, 10.15, 40.5;
+      kd_ang << 5.0, 5.0, 15.0;
       //kd_ang << 0.0, 0.0, 0.0;
 
       e_lin         << 0.0, 0.0, 0.0;
@@ -77,28 +79,16 @@ class EController : public rclcpp::Node{
       qe           = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0);
 
       // Actuation matrix
-      //actuation <<  0,    -l*kT,  0,    l*kT,
-      //             -l*kT,  0,     l*kT, 0,
-      //             -kQ,    kQ,   -kQ,   kQ,
-      //              kT,    kT,    kT,   kT;
-      //double newvar = l/sqrt(2);
       double dd = l/sqrt(2);
-      //actuation <<  1,    1,  1,    1,
-      //		    newvar, -newvar, -newvar, newvar,
-      //		    newvar, -newvar, newvar, -newvar,
-      //		    -kT, kT, kT, -kT;
-      //actuation << kT, -kT*l, -kT*l,  kT*kQ,
-      //		   kT,  kT*l,  kT*l,  kT*kQ,
-      //		   kT, -kT*l,  kT*l, -kT*kQ,
-      //		   kT,  kT*l, -kT*l, -kT*kQ;
-      actuation <<  -kT, -kT, -kT, -kT,
-      		    -dd*kT,  dd*kT, -dd*kT, dd*kT,
-      		     dd*kT, -dd*kT, -dd*kT, dd*kT,
-      		     kQ,    kQ,   -kQ,   -kQ;
-      //actuation <<   kT,  kT, kT, kT,
-      //		     dd*kT, -dd*kT, dd*kT, -dd*kT,
-      //		     dd*kT, dd*kT, -dd*kT, -dd*kT,
-      //		     -kQ,    -kQ,   kQ,   kQ;
+
+      actuation <<  kT, kT, kT, kT,
+      		    -dd*kT, dd*kT,  dd*kT, -dd*kT,
+      		     //dd*kT, -dd*kT,  dd*kT,-dd*kT,
+      		     -dd*kT, dd*kT, -dd*kT, dd*kT,
+      		     //-kQ,    -kQ,   -kQ,   -kQ;
+      		     //kT,    kT,   -kT,   -kT;
+      		     -kT,    -kT,   kT,   kT;
+      		     //0, 0, 0, 0;
 
       motor_speed.velocity.resize(4);
     }
@@ -154,7 +144,6 @@ class EController : public rclcpp::Node{
       uaux_lin = kp_lin.cwiseProduct(e_lin) + kd_lin.cwiseProduct(e_dot_lin);
 
       // Rotate control
-      //u_lin = uaux_lin + g_vector; // No gravity compensation ?
       u_lin = uaux_lin;
 
       u_lin_q.w() = 0.0;
@@ -162,40 +151,30 @@ class EController : public rclcpp::Node{
       u_lin_q.y() = u_lin(1);
       u_lin_q.z() = u_lin(2);
       u_lin_q_rot = sim_quat.conjugate() * u_lin_q * sim_quat;
-      //u_lin_q_rot = sim_quat * u_lin_q * sim_quat.conjugate();
 
       // Desired forces
       fu(0) = -m * u_lin_q_rot.x();
       fu(1) = -m * u_lin_q_rot.y();
-      //fu(2) = m * u_lin_q_rot.z() + m * 9.81; // Add gravity compensation
       fu(2) = m * u_lin_q_rot.z(); // Add gravity compensation
 
       // Olivas Tesis 2.51
-      //qud = Eigen::Quaterniond(Eigen::AngleAxisd(sqrt((1 + fu.normalized().dot(ft))/2),
-      //                                          (((fu.normalized().cross(ft).normalized())*sqrt((1 - fu.normalized().dot(ft))/2))))) *
-      //                                          desired_quat;
-
       if ( abs(fu.normalized().dot(ft)) == 1.0 ) { 
         qud.w() = 1.0;
       } else {
 	qud.w() = sqrt((1 + (fu.normalized()).dot(ft))/2.0);
       }
-      //auto au = (fu.normalized());
       if (fu.normalized().cross(ft).norm() < 0.01) {
-      //if (au.cross(ft).norm() < 0.01) {
 	qud.x() = 0.0;
 	qud.y() = 0.0;
 	qud.z() = 0.0;
       } else {
 	Eigen::Vector3d axis = (((fu.normalized()).cross(ft)).normalized())*sqrt((1 - (fu.normalized()).dot(ft))/2.0);
-	//Eigen::Vector3d axis = ((au.cross(ft)).normalized())*sqrt((1 - au.dot(ft))/2.0); 
         qud.x() = axis(0);	
 	qud.y() = axis(1);
 	qud.z() = axis(2);
       }
       qud = qud * desired_quat;
       qud.normalize();
-
 
       // Publish local pose for visualization
       geometry_msgs::msg::PoseStamped local_pose_msg;
@@ -210,7 +189,6 @@ class EController : public rclcpp::Node{
       // Compute logarithmic mapping
       qe = sim_quat.inverse() * qud;
       qe.normalize();
-
 
       // Publish qud for visualization
       geometry_msgs::msg::PoseStamped qud_msg;
@@ -228,7 +206,6 @@ class EController : public rclcpp::Node{
       if (norm < 0.01) {
 	e_ang = Eigen::Vector3d(0.0, 0.0, 0.0);
       } else {
-	//e_ang = 2 * Eigen::Vector3d(qe.x(), qe.y(), qe.z()).normalized() * (acos(qe.w()) < acos(-qe.w()) ? acos(qe.w()) : acos(-qe.w()));
 	e_ang = 2 * Eigen::Vector3d(qe.x(), qe.y(), qe.z()).normalized() * (acos(qe.w()));
       }
 
@@ -242,25 +219,21 @@ class EController : public rclcpp::Node{
       u_ang = J * uaux_ang + (sim_omega.cross(J * sim_omega));
 
       // Castañeda ICUAS17 (39)
-      //flat_outputs << u_ang(0), u_ang(1), u_ang(2), fu(2);
-      flat_outputs << -fu(2), u_ang(0), -u_ang(1), u_ang(2);
-      //flat_outputs << -0.01, 0, -0.001, 0; 
-      motor_speeds = actuation.inverse() * flat_outputs;
-      std::cout << "Motor speeds (squared): " << motor_speeds.transpose() << std::endl;
-      //motor_speeds(0) = motor_speeds(0) / kT;
-      //motor_speeds(1) = motor_speeds(1) / kT;
-      //motor_speeds(2) = motor_speeds(2) / kT;
-      //motor_speeds(3) = motor_speeds(3) / kT;
+      flat_outputs << fu(2), u_ang(0), u_ang(1), u_ang(2);
+      // Pseudo inverse for custom allo
+      motor_speeds = actuation.completeOrthogonalDecomposition().pseudoInverse() * flat_outputs;
+      
+      //std::cout << "Motor speeds (squared): " << motor_speeds.transpose() << std::endl;
+      
       motor_speeds = motor_speeds.cwiseSqrt();
-      //std::cout << "Motor speeds: " << motor_speeds.transpose() << std::endl;
 
       // Publish motor speeds
       motor_speed.header.stamp = this->get_clock()->now();
       motor_speed.header.frame_id = "sim/motor_speed";
       motor_speed.velocity[0] = std::max(0.0, std::min(2000.0, motor_speeds(0)));
       motor_speed.velocity[1] = std::max(0.0, std::min(2000.0, motor_speeds(1)));
-      motor_speed.velocity[3] = std::max(0.0, std::min(2000.0, motor_speeds(2)));
-      motor_speed.velocity[2] = std::max(0.0, std::min(2000.0, motor_speeds(3)));
+      motor_speed.velocity[2] = std::max(0.0, std::min(2000.0, motor_speeds(2)));
+      motor_speed.velocity[3] = std::max(0.0, std::min(2000.0, motor_speeds(3)));
       motor_publisher->publish(motor_speed);
 
       // Print control outputs for now
