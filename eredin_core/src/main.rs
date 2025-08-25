@@ -52,8 +52,8 @@ mod app {
 
     #[local]
     struct Local {
-      read_data: [u8; 64],
-      idx: u8,
+      //read_data: [u8; 64],
+      //idx: u8,
       rtt_channel: Option<rtt_target::DownChannel>,
     }
 
@@ -144,8 +144,8 @@ mod app {
       task_telemetry::spawn().ok();
       //task_telemetry2::spawn().ok();
       task_compute_control::spawn().ok(); // Actual task lol
-      let read_data: [u8; 64] = [0; 64]; 
-      let idx: u8 = 0;
+      //let read_data: [u8; 64] = [0; 64]; 
+      //let idx: u8 = 0;
 
       let odometry: eredin_types::Odometry = eredin_types::Odometry {
         pose: [0.0; 7], 
@@ -170,8 +170,8 @@ mod app {
           odometry,
         },
         Local {
-          read_data,
-          idx,
+          //read_data,
+          //idx,
           rtt_channel,
         },
       )
@@ -263,32 +263,31 @@ mod app {
       Mono::delay(1000.millis()).await;
     }
   }
-
-  #[task(binds = USART3, shared = [serial], local = [read_data, idx])]
-  fn task_receive(con: task_receive::Context) {
-    let mut serial_if = con.shared.serial; 
-
-    let byte = serial_if.lock(|serial| {
-      serial.read()
-    });
-    let read_data = con.local.read_data;
-    let idx = con.local.idx; 
-    if let Ok(byte) = byte {
-      read_data[*idx as usize] = byte;
-      *idx += 1;
-    }
-    if *idx >= read_data.len() as u8 || read_data[*idx as usize - 1] == 13 {
-      *idx = 0; // Reset index if it exceeds buffer size
-      serial_if.lock(|serial| {
-        let read_str = core::str::from_utf8(&read_data[..]).unwrap_or("Invalid UTF-8"); 
-        writeln!(serial, "TaskReceive> Read data: {}", read_str).unwrap();
-      });
-      // Clear the buffer
-      for i in 0..read_data.len() {
-        read_data[i] = 0; // Clear the buffer
-      }
-    }
-  }
+//  #[task(binds = USART3, shared = [serial], local = [read_data, idx])]
+//  fn task_receive(con: task_receive::Context) {
+//    let mut serial_if = con.shared.serial; 
+//
+//    let byte = serial_if.lock(|serial| {
+//      serial.read()
+//    });
+//    let read_data = con.local.read_data;
+//    let idx = con.local.idx; 
+//    if let Ok(byte) = byte {
+//      read_data[*idx as usize] = byte;
+//      *idx += 1;
+//    }
+//    if *idx >= read_data.len() as u8 || read_data[*idx as usize - 1] == 13 {
+//      *idx = 0; // Reset index if it exceeds buffer size
+//      serial_if.lock(|serial| {
+//        let read_str = core::str::from_utf8(&read_data[..]).unwrap_or("Invalid UTF-8"); 
+//        writeln!(serial, "TaskReceive> Read data: {}", read_str).unwrap();
+//      });
+//      // Clear the buffer
+//      for i in 0..read_data.len() {
+//        read_data[i] = 0; // Clear the buffer
+//      }
+//    }
+//  }
 
   /*#[task(shared = [led_r])]
   async fn task_blink_led1(con: task_blink_led1::Context) {
