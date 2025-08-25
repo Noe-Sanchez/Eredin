@@ -9,6 +9,8 @@ rustflags = "-C link-arg=-Tlink.x"
 cortex-m = { version = "0.7" , features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
 panic-halt = "1.0.0"
+rtt-target = { version = "0.6.1" }
+panic-rtt-target = { version = "0.2.0"}
 #probe-rs = "0.29.0"
 
 #stm32h7 = { version = "0.16.0", features = ["stm32h743", "rt"] }
@@ -22,3 +24,5 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+[features]
+run-hitl = []
