@@ -13,9 +13,11 @@ find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(actuator_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 add_executable(control_node src/control.cpp)
-ament_target_dependencies(control_node rclcpp std_msgs geometry_msgs nav_msgs actuator_msgs)
+ament_target_dependencies(control_node rclcpp std_msgs geometry_msgs nav_msgs actuator_msgs visualization_msgs tf2_ros) 
 
 #ament_python_install_package(${PROJECT_NAME})
 
@@ -29,6 +31,7 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(DIRECTORY meshes DESTINATION share/${PROJECT_NAME})
 #install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()

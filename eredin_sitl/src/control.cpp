@@ -9,6 +9,8 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "actuator_msgs/msg/actuators.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "visualization_msgs/msg/marker.hpp"
+#include <tf2_ros/transform_broadcaster.h>
 
 using namespace std::chrono_literals;
 
@@ -24,10 +26,13 @@ class EController : public rclcpp::Node{
       motor_publisher = this->create_publisher<actuator_msgs::msg::Actuators>("/sim/motor_speed", 10);
 
       // For viz
-      qud_publisher = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/qud", 10);
+      qud_publisher        = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/qud", 10);
       local_pose_publisher = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/local_pose", 10);
+      force_viz_publisher  = this->create_publisher<visualization_msgs::msg::Marker>("/control/force_viz", 10);
+      tf_broadcaster       = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
       control_timer = this->create_wall_timer(10ms, std::bind(&EController::control_callback, this));
+
 
       m = 2.0;
 
@@ -43,7 +48,8 @@ class EController : public rclcpp::Node{
       kT = 8.54858e-6;
       //kQ = 1.6e-2;
       //kQ = 8.06428-5;
-      kQ = 8064000000.28;
+      //kQ = 8064000000.28;
+      kQ = kT*0.25; 
       l  = 0.25;
 
       kp_lin << 0.5, 0.5, 16.5;
@@ -87,7 +93,8 @@ class EController : public rclcpp::Node{
       		     -dd*kT, dd*kT, -dd*kT, dd*kT,
       		     //-kQ,    -kQ,   -kQ,   -kQ;
       		     //kT,    kT,   -kT,   -kT;
-      		     -kT,    -kT,   kT,   kT;
+      		     //-kT,    -kT,   kT,   kT;
+      		     -kQ,    -kQ,   kQ,   kQ;
       		     //0, 0, 0, 0;
 
       motor_speed.velocity.resize(4);
@@ -150,12 +157,49 @@ class EController : public rclcpp::Node{
       u_lin_q.x() = u_lin(0);
       u_lin_q.y() = u_lin(1);
       u_lin_q.z() = u_lin(2);
+      //u_lin_q.x() = desired_pose.pose.pose.position.x; 
+      //u_lin_q.y() = desired_pose.pose.pose.position.y;
+      //u_lin_q = desired_quat.conjugate() * u_lin_q * desired_quat; 
+      //u_lin_q = desired_quat * u_lin_q * desired_quat.conjugate(); 
       u_lin_q_rot = sim_quat.conjugate() * u_lin_q * sim_quat;
+      //u_lin_q_rot = sim_quat * u_lin_q * sim_quat.conjugate();
+      //u_lin_q_rot = desired_quat.conjugate() * u_lin_q * desired_quat; 
+      //u_lin_q_rot = u_lin_q; 
+      //u_lin_q_rot = sim_quat * u_lin_q * sim_quat.conjugate();
+      
+      // Force visualization
+      visualization_msgs::msg::Marker force_marker;
+      force_marker.header.frame_id = "x500";
+      force_marker.header.stamp = this->get_clock()->now();
+      force_marker.type = visualization_msgs::msg::Marker::ARROW;
+      force_marker.action = visualization_msgs::msg::Marker::ADD;
+      force_marker.scale.x = 0.02;
+      force_marker.scale.y = 0.04;
+      force_marker.scale.z = 0.06;
+      force_marker.color.a = 1.0;
+      force_marker.color.r = 1.0;
+      force_marker.color.g = 0.0;
+      force_marker.color.b = 0.0;
+      geometry_msgs::msg::Point start, end;
+      start.x = 0.0;
+      start.y = 0.0;
+      start.z = 0.0;
+      end.x = 0.5 * u_lin_q_rot.x();
+      end.y = 0.5 * u_lin_q_rot.y();
+      //end.x = 0.5 * u_lin_q.x();
+      //end.y = 0.5 * u_lin_q.y();
+      //end.z = 0.1 * u_lin_q_rot.z();	
+      end.z = 0.0; 
+      force_marker.points.push_back(start);
+      force_marker.points.push_back(end);
+      force_viz_publisher->publish(force_marker);
 
       // Desired forces
       fu(0) = -m * u_lin_q_rot.x();
       fu(1) = -m * u_lin_q_rot.y();
-      fu(2) = m * u_lin_q_rot.z(); // Add gravity compensation
+      //fu(0) =  -desired_pose.pose.pose.position.x;
+      //fu(1) =  -desired_pose.pose.pose.position.y;
+      fu(2) =  m * u_lin_q_rot.z(); // Add gravity compensation
 
       // Olivas Tesis 2.51
       if ( abs(fu.normalized().dot(ft)) == 1.0 ) { 
@@ -174,6 +218,8 @@ class EController : public rclcpp::Node{
 	qud.z() = axis(2);
       }
       qud = qud * desired_quat;
+      //qud = desired_quat * qud;
+      //qud = qud * desired_quat.inverse();
       qud.normalize();
 
       // Publish local pose for visualization
@@ -185,6 +231,20 @@ class EController : public rclcpp::Node{
       local_pose_msg.pose.orientation.y = sim_quat.y();
       local_pose_msg.pose.orientation.z = sim_quat.z();
       local_pose_publisher->publish(local_pose_msg);
+
+      // tf
+      geometry_msgs::msg::TransformStamped t;
+      t.header.stamp = this->get_clock()->now();
+      t.header.frame_id = "map";
+      t.child_frame_id = "x500";
+      t.transform.translation.x = sim_pos(0);
+      t.transform.translation.y = sim_pos(1);
+      t.transform.translation.z = sim_pos(2);
+      t.transform.rotation.w = sim_quat.w();
+      t.transform.rotation.x = sim_quat.x();
+      t.transform.rotation.y = sim_quat.y();
+      t.transform.rotation.z = sim_quat.z();
+      tf_broadcaster->sendTransform(t);
 
       // Compute logarithmic mapping
       qe = sim_quat.inverse() * qud;
@@ -298,6 +358,8 @@ class EController : public rclcpp::Node{
 
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr qud_publisher;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr local_pose_publisher;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr force_viz_publisher;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
 
 };
 

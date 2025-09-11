@@ -8,3 +8,9 @@
   ros_type_name:  "actuator_msgs/msg/Actuators"
   gz_type_name:   "gz.msgs.Actuators"
   direction:      ROS_TO_GZ
+
+#- service_name:      "/world/empty/control"
+#  gz_req_type_name:  "gz.msgs.WorldControl"
+#  gz_rep_type_name:  "gz.msgs.Boolean"
+#  ros_type_name:     "ros_gz_interfaces/srv/ControlWorld"
+#  direction:         GZ_TO_ROS 
