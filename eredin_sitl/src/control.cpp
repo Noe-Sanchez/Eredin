@@ -24,15 +24,9 @@ class EController : public rclcpp::Node{
 
       // Publishers
       motor_publisher = this->create_publisher<actuator_msgs::msg::Actuators>("/sim/motor_speed", 10);
-
-      // For viz
-      qud_publisher        = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/qud", 10);
-      local_pose_publisher = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control/local_pose", 10);
-      force_viz_publisher  = this->create_publisher<visualization_msgs::msg::Marker>("/control/force_viz", 10);
-      tf_broadcaster       = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+      tf_broadcaster  = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
       control_timer = this->create_wall_timer(10ms, std::bind(&EController::control_callback, this));
-
 
       m = 2.0;
 
@@ -46,9 +40,6 @@ class EController : public rclcpp::Node{
             0, 0, Jzz;
 
       kT = 8.54858e-6;
-      //kQ = 1.6e-2;
-      //kQ = 8.06428-5;
-      //kQ = 8064000000.28;
       kQ = kT*0.25; 
       l  = 0.25;
 
@@ -56,7 +47,6 @@ class EController : public rclcpp::Node{
       kd_lin << 0.5, 0.5, 5.5;
       kp_ang << 10.15, 10.15, 40.5;
       kd_ang << 5.0, 5.0, 15.0;
-      //kd_ang << 0.0, 0.0, 0.0;
 
       e_lin         << 0.0, 0.0, 0.0;
       e_dot_lin     << 0.0, 0.0, 0.0;
@@ -66,7 +56,6 @@ class EController : public rclcpp::Node{
       desired_vel   << 0.0, 0.0, 0.0;
       sim_omega     << 0.0, 0.0, 0.0;
       desired_omega << 0.0, 0.0, 0.0;
-      u_lin         << 0.0, 0.0, 0.0;
       u_ang         << 0.0, 0.0, 0.0;
       fu            << 0.0, 0.0, 0.0;
       ft            << 0.0, 0.0, 1.0;
@@ -80,22 +69,18 @@ class EController : public rclcpp::Node{
 
       sim_quat     = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0);
       desired_quat = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0);
-      u_lin_q      = Eigen::Quaterniond(0.0, 0.0, 0.0, 0.0);
       qud          = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0);
       qe           = Eigen::Quaterniond(1.0, 0.0, 0.0, 0.0);
+      vel_body     = Eigen::Quaterniond(0.0, 0.0, 0.0, 0.0);
+      vel_world    = Eigen::Quaterniond(0.0, 0.0, 0.0, 0.0);
 
       // Actuation matrix
       double dd = l/sqrt(2);
 
       actuation <<  kT, kT, kT, kT,
       		    -dd*kT, dd*kT,  dd*kT, -dd*kT,
-      		     //dd*kT, -dd*kT,  dd*kT,-dd*kT,
       		     -dd*kT, dd*kT, -dd*kT, dd*kT,
-      		     //-kQ,    -kQ,   -kQ,   -kQ;
-      		     //kT,    kT,   -kT,   -kT;
-      		     //-kT,    -kT,   kT,   kT;
       		     -kQ,    -kQ,   kQ,   kQ;
-      		     //0, 0, 0, 0;
 
       motor_speed.velocity.resize(4);
     }
@@ -107,18 +92,39 @@ class EController : public rclcpp::Node{
                   sim_pose.pose.pose.position.y,
                   sim_pose.pose.pose.position.z;
 
-      sim_vel <<  sim_pose.twist.twist.linear.x,
-                  sim_pose.twist.twist.linear.y,
-                  sim_pose.twist.twist.linear.z;
-
       sim_quat.w() =  sim_pose.pose.pose.orientation.w;
       sim_quat.x() =  sim_pose.pose.pose.orientation.x;
       sim_quat.y() =  sim_pose.pose.pose.orientation.y;
       sim_quat.z() =  sim_pose.pose.pose.orientation.z;
 
-      sim_omega <<  sim_pose.twist.twist.angular.x,
-	            sim_pose.twist.twist.angular.y,
-		    sim_pose.twist.twist.angular.z;
+      // Rotate velocity to world frame, because it comes from odom plugin
+      vel_body.w() = 0.0;
+      vel_body.x() = sim_pose.twist.twist.linear.x;
+      vel_body.y() = sim_pose.twist.twist.linear.y;
+      vel_body.z() = sim_pose.twist.twist.linear.z;
+
+      vel_world = sim_quat * vel_body * sim_quat.conjugate();
+
+      sim_vel << vel_world.x(),
+		 vel_world.y(),
+		 vel_world.z();
+
+      sim_omega << sim_pose.twist.twist.angular.x, 
+		   sim_pose.twist.twist.angular.y,
+		   sim_pose.twist.twist.angular.z;
+      
+      // tf
+      sim_tf.header.stamp = this->get_clock()->now();
+      sim_tf.header.frame_id = "map";
+      sim_tf.child_frame_id = "x500";
+      sim_tf.transform.translation.x = sim_pos(0);
+      sim_tf.transform.translation.y = sim_pos(1);
+      sim_tf.transform.translation.z = sim_pos(2);
+      sim_tf.transform.rotation.w = sim_quat.w();
+      sim_tf.transform.rotation.x = sim_quat.x();
+      sim_tf.transform.rotation.y = sim_quat.y();
+      sim_tf.transform.rotation.z = sim_quat.z();
+      tf_broadcaster->sendTransform(sim_tf);
     }
 
     void desired_pose_callback(const nav_msgs::msg::Odometry::SharedPtr msg){
@@ -151,56 +157,9 @@ class EController : public rclcpp::Node{
       uaux_lin = kp_lin.cwiseProduct(e_lin) + kd_lin.cwiseProduct(e_dot_lin);
 
       // Rotate control
-      u_lin = uaux_lin;
-
-      u_lin_q.w() = 0.0;
-      u_lin_q.x() = u_lin(0);
-      u_lin_q.y() = u_lin(1);
-      u_lin_q.z() = u_lin(2);
-      //u_lin_q.x() = desired_pose.pose.pose.position.x; 
-      //u_lin_q.y() = desired_pose.pose.pose.position.y;
-      //u_lin_q = desired_quat.conjugate() * u_lin_q * desired_quat; 
-      //u_lin_q = desired_quat * u_lin_q * desired_quat.conjugate(); 
-      u_lin_q_rot = sim_quat.conjugate() * u_lin_q * sim_quat;
-      //u_lin_q_rot = sim_quat * u_lin_q * sim_quat.conjugate();
-      //u_lin_q_rot = desired_quat.conjugate() * u_lin_q * desired_quat; 
-      //u_lin_q_rot = u_lin_q; 
-      //u_lin_q_rot = sim_quat * u_lin_q * sim_quat.conjugate();
+      fu = -uaux_lin;
+      fu(2) = -fu(2);
       
-      // Force visualization
-      visualization_msgs::msg::Marker force_marker;
-      force_marker.header.frame_id = "x500";
-      force_marker.header.stamp = this->get_clock()->now();
-      force_marker.type = visualization_msgs::msg::Marker::ARROW;
-      force_marker.action = visualization_msgs::msg::Marker::ADD;
-      force_marker.scale.x = 0.02;
-      force_marker.scale.y = 0.04;
-      force_marker.scale.z = 0.06;
-      force_marker.color.a = 1.0;
-      force_marker.color.r = 1.0;
-      force_marker.color.g = 0.0;
-      force_marker.color.b = 0.0;
-      geometry_msgs::msg::Point start, end;
-      start.x = 0.0;
-      start.y = 0.0;
-      start.z = 0.0;
-      end.x = 0.5 * u_lin_q_rot.x();
-      end.y = 0.5 * u_lin_q_rot.y();
-      //end.x = 0.5 * u_lin_q.x();
-      //end.y = 0.5 * u_lin_q.y();
-      //end.z = 0.1 * u_lin_q_rot.z();	
-      end.z = 0.0; 
-      force_marker.points.push_back(start);
-      force_marker.points.push_back(end);
-      force_viz_publisher->publish(force_marker);
-
-      // Desired forces
-      fu(0) = -m * u_lin_q_rot.x();
-      fu(1) = -m * u_lin_q_rot.y();
-      //fu(0) =  -desired_pose.pose.pose.position.x;
-      //fu(1) =  -desired_pose.pose.pose.position.y;
-      fu(2) =  m * u_lin_q_rot.z(); // Add gravity compensation
-
       // Olivas Tesis 2.51
       if ( abs(fu.normalized().dot(ft)) == 1.0 ) { 
         qud.w() = 1.0;
@@ -218,47 +177,10 @@ class EController : public rclcpp::Node{
 	qud.z() = axis(2);
       }
       qud = qud * desired_quat;
-      //qud = desired_quat * qud;
-      //qud = qud * desired_quat.inverse();
-      qud.normalize();
-
-      // Publish local pose for visualization
-      geometry_msgs::msg::PoseStamped local_pose_msg;
-      local_pose_msg.header.stamp = this->get_clock()->now();
-      local_pose_msg.header.frame_id = "map";
-      local_pose_msg.pose.orientation.w = sim_quat.w();
-      local_pose_msg.pose.orientation.x = sim_quat.x();
-      local_pose_msg.pose.orientation.y = sim_quat.y();
-      local_pose_msg.pose.orientation.z = sim_quat.z();
-      local_pose_publisher->publish(local_pose_msg);
-
-      // tf
-      geometry_msgs::msg::TransformStamped t;
-      t.header.stamp = this->get_clock()->now();
-      t.header.frame_id = "map";
-      t.child_frame_id = "x500";
-      t.transform.translation.x = sim_pos(0);
-      t.transform.translation.y = sim_pos(1);
-      t.transform.translation.z = sim_pos(2);
-      t.transform.rotation.w = sim_quat.w();
-      t.transform.rotation.x = sim_quat.x();
-      t.transform.rotation.y = sim_quat.y();
-      t.transform.rotation.z = sim_quat.z();
-      tf_broadcaster->sendTransform(t);
 
       // Compute logarithmic mapping
       qe = sim_quat.inverse() * qud;
       qe.normalize();
-
-      // Publish qud for visualization
-      geometry_msgs::msg::PoseStamped qud_msg;
-      qud_msg.header.stamp = this->get_clock()->now();
-      qud_msg.header.frame_id = "map";
-      qud_msg.pose.orientation.w = qe.w();
-      qud_msg.pose.orientation.x = qe.x();
-      qud_msg.pose.orientation.y = qe.y();
-      qud_msg.pose.orientation.z = qe.z();
-      qud_publisher->publish(qud_msg);
 
       // Sanity check qe for mag = 0
       double norm = sqrt(qe.x()*qe.x() + qe.y()*qe.y() + qe.z()*qe.z());
@@ -279,11 +201,9 @@ class EController : public rclcpp::Node{
       u_ang = J * uaux_ang + (sim_omega.cross(J * sim_omega));
 
       // Castañeda ICUAS17 (39)
-      flat_outputs << fu(2), u_ang(0), u_ang(1), u_ang(2);
+      flat_outputs << fu.norm(), u_ang(0), u_ang(1), u_ang(2);
       // Pseudo inverse for custom allo
       motor_speeds = actuation.completeOrthogonalDecomposition().pseudoInverse() * flat_outputs;
-      
-      //std::cout << "Motor speeds (squared): " << motor_speeds.transpose() << std::endl;
       
       motor_speeds = motor_speeds.cwiseSqrt();
 
@@ -296,17 +216,13 @@ class EController : public rclcpp::Node{
       motor_speed.velocity[3] = std::max(0.0, std::min(2000.0, motor_speeds(3)));
       motor_publisher->publish(motor_speed);
 
-      // Print control outputs for now
-      //std::cout << "E_lin: " << e_lin.transpose() << " | E_dot_lin: " << e_dot_lin.transpose() << std::endl;
-      std::cout << "Fu: " << fu.transpose() << " | Tau: " << u_ang.transpose() << std::endl;
-      //std::cout << "E_ang: " << e_ang.transpose() << " | E_dot_ang: " << e_dot_ang.transpose() << std::endl;
-
     }
 
   private:
 
     nav_msgs::msg::Odometry sim_pose;
     nav_msgs::msg::Odometry desired_pose;
+    geometry_msgs::msg::TransformStamped sim_tf;
     actuator_msgs::msg::Actuators motor_speed;
 
     Eigen::Matrix3d    J;             // Inertia tensor, kg m^2
@@ -320,7 +236,6 @@ class EController : public rclcpp::Node{
     Eigen::Vector3d    desired_vel;   // Desired velocity
     Eigen::Vector3d    sim_omega;     // Simulated angular velocity
     Eigen::Vector3d    desired_omega; // Desired angular velocity
-    Eigen::Vector3d    u_lin;         // Linear control output
     Eigen::Vector3d    u_ang;         // Angular control output
     Eigen::Vector3d    uaux_lin;      // Linear auxiliary control output
     Eigen::Vector3d    uaux_ang;      // Angular auxiliary control output
@@ -333,10 +248,10 @@ class EController : public rclcpp::Node{
     Eigen::Vector3d    g_vector;      // Gravity vector
     Eigen::Quaterniond sim_quat;     // Simulated quaternion
     Eigen::Quaterniond desired_quat; // Desired quaternion (only for yaw input)
-    Eigen::Quaterniond u_lin_q;      // Linear control output (quaternion)
-    Eigen::Quaterniond u_lin_q_rot;  // Rotated linear control output (quaternion)
     Eigen::Quaterniond qud;          // Internal quaternion for logarithmic mapping
     Eigen::Quaterniond qe;           // Quaternion error for logarithmic mapping
+    Eigen::Quaterniond vel_body;     // Velocity in body frame (from odom plugin)
+    Eigen::Quaterniond vel_world;    // Velocity in world frame
     Eigen::Matrix4d    actuation;    // Quadrotor actuation matrix
     Eigen::Vector4d    flat_outputs; // Overall flat outputs
     Eigen::Vector4d    motor_speeds; // Motor speeds for publishing
@@ -356,9 +271,6 @@ class EController : public rclcpp::Node{
 
     rclcpp::Publisher<actuator_msgs::msg::Actuators>::SharedPtr motor_publisher;
 
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr qud_publisher;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr local_pose_publisher;
-    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr force_viz_publisher;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
 
 };
