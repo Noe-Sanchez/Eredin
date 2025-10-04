@@ -142,6 +142,7 @@ mod app {
       //task_blink_led2::spawn().ok();
       //task_blink_led3::spawn().ok();
       task_telemetry::spawn().ok();
+      task_baro::spawn().ok();
       //task_telemetry2::spawn().ok();
       task_compute_control::spawn().ok(); // Actual task lol
       //let read_data: [u8; 64] = [0; 64]; 
@@ -245,6 +246,27 @@ mod app {
 
   #[task(shared = [serial, led_r, odometry])]
   async fn task_telemetry(con: task_telemetry::Context) {
+    let serial_if = con.shared.serial; 
+    let mut led = con.shared.led_r;
+    let odometry = con.shared.odometry;
+    let mut bq_t = (serial_if, odometry); // Locking tuple
+    loop {
+      led.lock(|led| {
+          led.toggle();
+      });
+      bq_t.lock(|serial, odometry| {
+          //writeln!(serial, "Task1> Hello from RTIC Task1!\r").unwrap();
+          writeln!(serial, "Telemetry> Odometry: pose: {:?}, velocity: {:?}\r", 
+                   odometry.pose, odometry.velocity).unwrap();
+        
+      });
+
+      Mono::delay(1000.millis()).await;
+    }
+  }
+
+  #[task(shared = [serial, led_r, odometry])]
+  async fn task_baro(con: task_baro::Context) {
     let serial_if = con.shared.serial; 
     let mut led = con.shared.led_r;
     let odometry = con.shared.odometry;
