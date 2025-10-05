@@ -39,20 +39,6 @@ use rtic_monotonics::systick::prelude::*;
 
 use core::fmt::Write;
 
-mod bmp399 {
-  pub const CHIP_ID: u8 = 0x00;
-  pub const STATUS: u8 = 0x03;
-  pub const DATA_0: u8 = 0x04;
-  pub const PWR_CTRL: u8 = 0x1B;
-  pub const OSR: u8 = 0x1C;
-  pub const ODR: u8 = 0x1D;
-  pub const CONFIG: u8 = 0x1F;
-  pub const CMD: u8 = 0x7E;
-  pub const EXPECTED_CHIP_ID: u8 = 0x60;
-  pub const SPI_READ: u8 = 0x80;
-  pub const SPI_WRITE: u8 = 0x00;
-}
-
 use stm32h7xx_hal::{
     prelude::*,
     gpio::{PA0, PA1, PA2, PA5, PA6, PA7, PF13, Output, PushPull},
@@ -75,13 +61,13 @@ mod app {
       dt:       u32, 
       odometry: eredin_types::Odometry,
       sharkdata: eredin_types::SharkData,
-      spi: spi::Spi<SPI1, spi::Enabled>, // SPI para BMP390
+      spi: spi::Spi<SPI1, spi::Enabled>,
     }
 
     #[local]
     struct Local {
       rtt_channel: Option<rtt_target::DownChannel>,
-      bmp390_cs: PF13<Output<PushPull>>, // chip select pin for BMP390
+      bmp390_cs: PF13<Output<PushPull>>,
     }
 
     #[init]
@@ -131,49 +117,6 @@ mod app {
       let gpiob = dp.GPIOB.split(ccdr.peripheral.GPIOB);
       let gpioa = dp.GPIOA.split(ccdr.peripheral.GPIOA);
       let gpiof = dp.GPIOF.split(ccdr.peripheral.GPIOF);
-
-      // SPI1 for BMP390
-      let sck = gpioa.pa5.into_alternate();
-      let miso = gpioa.pa6.into_alternate();
-      let mosi = gpioa.pa7.into_alternate();
-      let mut bmp390_cs = gpiob.pf13.into_push_pull_output();
-      bmp390_cs.set_high(); // CS inactivo
-
-      // Configure SPI1
-      let mut spi = dp.SPI1.spi(
-          (sck, miso, mosi),
-          spi::MODE_0,
-          10.MHz(),
-          ccdr.peripheral.SPI1,
-          &ccdr.clocks,
-      );
-
-      // Initialize BMP390
-      writeln!(serial, "Eredin> Initializing BMP390...\r").unwrap();
-      
-      // Small delay for sensor boot
-      for _ in 0..400_000 { cortex_m::asm::nop(); }
-      
-      // Read chip ID
-      let chip_id = bmp390_read_register(&mut bmp390_cs, &mut spi, bmp390::CHIP_ID);
-      
-      if chip_id == bmp390::EXPECTED_CHIP_ID {
-          writeln!(serial, "Eredin> BMP390 detected! (ID: 0x{:02X})\r", chip_id).unwrap();
-          
-          // Soft reset
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::CMD, 0xB6);
-          for _ in 0..4_000_000 { cortex_m::asm::nop(); } // 10ms delay
-          
-          // Configure sensor
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::PWR_CTRL, 0x33); // Enable press+temp
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::OSR, 0x03); // OSR x8, x1
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::ODR, 0x04); // 50Hz
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::CONFIG, 0x02); // IIR filter
-          
-          writeln!(serial, "Eredin> BMP390 configured!\r").unwrap();
-      } else {
-          writeln!(serial, "Eredin> BMP390 ERROR: Wrong chip ID 0x{:02X}\r", chip_id).unwrap();
-      }
 
       // Pins for LEDs
       let mut led_r = gpioa.pa0.into_push_pull_output();
@@ -252,11 +195,7 @@ mod app {
       // Schedule software tasks
       task_telemetry::spawn().ok();
       task_baro::spawn().ok();
-
-      //task_telemetry2::spawn().ok();
-      task_compute_control::spawn().ok(); // Actual task lol
-      //let read_data: [u8; 64] = [0; 64]; 
-      //let idx: u8 = 0;
+      task_compute_control::spawn().ok();
 
       let odometry: eredin_types::Odometry = eredin_types::Odometry {
         pose: [0.0; 7], 
@@ -347,7 +286,7 @@ mod app {
     }
   }
 
-    #[task(shared = [serial, led_r, odometry])]
+  #[task(shared = [serial, led_r, odometry])]
   async fn task_telemetry(con: task_telemetry::Context) {
     let serial_if = con.shared.serial; 
     let mut led = con.shared.led_r;
