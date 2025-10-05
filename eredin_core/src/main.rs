@@ -195,7 +195,11 @@ mod app {
       // Schedule software tasks
       task_telemetry::spawn().ok();
       task_baro::spawn().ok();
-      task_compute_control::spawn().ok();
+
+      //task_telemetry2::spawn().ok();
+      task_compute_control::spawn().ok(); // Actual task lol
+      //let read_data: [u8; 64] = [0; 64]; 
+      //let idx: u8 = 0;
 
       let odometry: eredin_types::Odometry = eredin_types::Odometry {
         pose: [0.0; 7], 
