@@ -1,11 +1,10 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #![no_main]
 #![no_std]
 
 #[cfg(feature = "run-hitl")]
 mod hitl_imports {
   use panic_rtt_target as _;
-  //use rtt_target::{rprintln, rtt_init_print};
 }
 #[cfg(not(feature = "run-hitl"))]
 use panic_halt as _;
@@ -15,8 +14,25 @@ pub mod eredin_types{
     pub pose:     [f32; 7], // x, y, z, qw, qx, qy, qz
     pub velocity: [f32; 6], // vx, vy, vz, wx, wy, wz
   }
+  pub struct SharkData {
+    pub baro:     [f32; 2], // pressure, temperature
+  }
 }
 
+// BMP390 constants module
+mod bmp399 {
+  pub const CHIP_ID: u8 = 0x00;
+  pub const STATUS: u8 = 0x03;
+  pub const DATA_0: u8 = 0x04;
+  pub const PWR_CTRL: u8 = 0x1B;
+  pub const OSR: u8 = 0x1C;
+  pub const ODR: u8 = 0x1D;
+  pub const CONFIG: u8 = 0x1F;
+  pub const CMD: u8 = 0x7E;
+  pub const EXPECTED_CHIP_ID: u8 = 0x60;
+  pub const SPI_READ: u8 = 0x80;
+  pub const SPI_WRITE: u8 = 0x00;
+}
 
 use rtic::app;
 use rtic_monotonics::systick::prelude::*;
@@ -24,15 +40,11 @@ use rtic_monotonics::systick::prelude::*;
 use core::fmt::Write;
 
 use stm32h7xx_hal::{
-                    prelude::*,
-                    gpio::PA0,
-                    gpio::PA1,
-                    gpio::PA2,
-                    gpio::Output,
-                    gpio::PushPull,
-                    stm32::USART3,
+    prelude::*,
+    gpio::{PA0, PA1, PA2, PA5, PA6, PA7, PF13, Output, PushPull},
+    stm32::{USART3, SPI1},
+    spi,
 };
-
 
 systick_monotonic!(Mono, 1000);
 
@@ -47,14 +59,15 @@ mod app {
       led_b:    PA2<Output<PushPull>>,
       serial:   stm32h7xx_hal::serial::Serial<USART3>,
       dt:       u32, 
-      odometry: eredin_types::Odometry, 
+      odometry: eredin_types::Odometry,
+      sharkdata: eredin_types::SharkData,
+      spi: spi::Spi<SPI1, spi::Enabled>,
     }
 
     #[local]
     struct Local {
-      //read_data: [u8; 64],
-      //idx: u8,
       rtt_channel: Option<rtt_target::DownChannel>,
+      bmp390_cs: PF13<Output<PushPull>>,
     }
 
     #[init]
@@ -65,12 +78,8 @@ mod app {
       #[cfg(not(feature = "run-hitl"))]
       let rtt_channel: Option<rtt_target::DownChannel> = None; 
 
-
       #[cfg(feature = "run-hitl")]
       {
-        //rtt_target::rtt_init_print!(); 
-        //rtt_target::rtt_init_default!(); // New macro for bidirectional RTT
-        // Default init macro for buffer size cfg
         let rtt_channels = rtt_target::rtt_init! {
           up: {
             0: {
@@ -87,8 +96,6 @@ mod app {
           }
         };
         rtt_channel = Some(rtt_channels.down.0);
-
-        //rtt_target::rprintln!("RTT> Running in HITL mode");
         rtt_target::set_print_channel(rtt_channels.up.0);
         rtt_target::rprintln!("RTT> Running in HITL mode");
       }
@@ -106,9 +113,10 @@ mod app {
       let rcc = dp.RCC.constrain();
       let ccdr = rcc.sys_ck(400.MHz()).freeze(pwrcfg, &dp.SYSCFG);
 
-      // Enable GPIOA/B clocks
+      // Enable GPIOA/B/F clocks
       let gpiob = dp.GPIOB.split(ccdr.peripheral.GPIOB);
       let gpioa = dp.GPIOA.split(ccdr.peripheral.GPIOA);
+      let gpiof = dp.GPIOF.split(ccdr.peripheral.GPIOF);
 
       // Pins for LEDs
       let mut led_r = gpioa.pa0.into_push_pull_output();
@@ -119,6 +127,13 @@ mod app {
       led_r.set_high();
       led_g.set_high();
       led_b.set_high();
+
+      // SPI1 pins for BMP390
+      let sck = gpioa.pa5.into_alternate();
+      let miso = gpioa.pa6.into_alternate();
+      let mosi = gpioa.pa7.into_alternate();
+      let mut bmp390_cs = gpiof.pf13.into_push_pull_output();
+      bmp390_cs.set_high(); // CS inactive
 
       // Pins for USART3
       let tx = gpiob.pb10.into_alternate();
@@ -132,24 +147,62 @@ mod app {
 
       serial.listen(stm32h7xx_hal::serial::Event::Rxne);
 
+      writeln!(serial, "Eredin> Starting TREMEENDO Scheduler...\r").unwrap(); // debug line
+      
+      // Configure SPI1
+      // let mut spi: spi::Spi<_, _, u8> = dp.SPI1.spi(
+      let mut spi = dp.SPI1.spi(
+        (sck, miso, mosi),
+        spi::MODE_0,
+        1.MHz(), // Prueba con velocidad más baja primero
+        ccdr.peripheral.SPI1,
+        &ccdr.clocks
+      );
+
+      
       let dt = 0; // Initialize dt
+
+      // Initialize BMP390
+      writeln!(serial, "Eredin> Initializing BMP390...\r").unwrap();
+      
+      // Small delay for sensor boot
+      for _ in 0..400_000 { cortex_m::asm::nop(); }
+      
+      // Read chip ID
+      let chip_id = bmp390_read_register(&mut bmp390_cs, &mut spi, bmp399::CHIP_ID);
+      
+      if chip_id == bmp399::EXPECTED_CHIP_ID {
+          writeln!(serial, "Eredin> BMP390 detected! (ID: 0x{:02X})\r", chip_id).unwrap();
+          
+          // Soft reset
+          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp399::CMD, 0xB6);
+          for _ in 0..4_000_000 { cortex_m::asm::nop(); } // 10ms delay
+          
+          // Configure sensor
+          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp399::PWR_CTRL, 0x33);
+          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp399::OSR, 0x03);
+          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp399::ODR, 0x04);
+          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp399::CONFIG, 0x02);
+          
+          writeln!(serial, "Eredin> BMP390 configured!\r").unwrap();
+      } else {
+          writeln!(serial, "Eredin> BMP390 ERROR: Wrong chip ID 0x{:02X}\r", chip_id).unwrap();
+      }
 
       // Greet before spinning
       writeln!(serial, "Eredin> Starting Scheduler...\r").unwrap();
 
       // Schedule software tasks
-      //task_blink_led1::spawn().ok();
-      //task_blink_led2::spawn().ok();
-      //task_blink_led3::spawn().ok();
       task_telemetry::spawn().ok();
-      //task_telemetry2::spawn().ok();
-      task_compute_control::spawn().ok(); // Actual task lol
-      //let read_data: [u8; 64] = [0; 64]; 
-      //let idx: u8 = 0;
+      task_baro::spawn().ok();
+      task_compute_control::spawn().ok();
 
       let odometry: eredin_types::Odometry = eredin_types::Odometry {
         pose: [0.0; 7], 
         velocity: [0.0; 6], 
+      };
+      let sharkdata: eredin_types::SharkData = eredin_types::SharkData {
+        baro: [0.0; 2],
       };
 
       // Software task for rtt demo
@@ -168,11 +221,12 @@ mod app {
           serial,
           dt,
           odometry,
+          sharkdata,
+          spi,
         },
         Local {
-          //read_data,
-          //idx,
           rtt_channel,
+          bmp390_cs,
         },
       )
   }
@@ -184,28 +238,21 @@ mod app {
     let dt = con.shared.dt;
     let odometry = con.shared.odometry;
     let chan_opt = con.local.rtt_channel;
-    // Just asign channels, since task wont be scheduled if not in HITL mode
     let channel = chan_opt.as_mut().expect("RTT channel not initialized");
 
-    // Locking tuple
     let mut bq_t = (dt, odometry);
-
     let mut rtt_buffer: [u8; 64] = [0; 64]; 
 
     loop {
       led.lock(|led| {
           led.toggle();
       });
-      bq_t.lock(|dt, _odometry| { // Try blocking read from RTT
-        // Loop until we read something
+      bq_t.lock(|dt, _odometry| {
         let read_bytes = channel.read(&mut rtt_buffer);
-
-        //rtt_target::rprintln!("RTT> Read {} bytes: {:?}", read_bytes, rtt_buffer);
         rtt_target::rprintln!("RTT> Read {} bytes: ", read_bytes);
-        *dt += 1; // Increment dt
+        *dt += 1;
         rtt_target::rprintln!("RTT> Count: {}", count);
       });
-      //rtt_target::rprintln!("RTT> Count: {}", count);
       count += 1;
       Mono::delay(200.millis()).await;
     }
@@ -217,17 +264,14 @@ mod app {
     let dt = con.shared.dt;
     let odometry = con.shared.odometry;
     let mut outputs: [f32; 4] = [0.0; 4]; 
-    // Locking tuple
     let mut bq_t = (dt, odometry);
     loop {
       led.lock(|led| {
           led.toggle();
       });
 
-      // Timestep lock, no holding on deploy, holding by rtt receive in HITL
-      //(dt, odometry).lock(|dt, odometry| {
       bq_t.lock(|dt, odometry| {
-        outputs[0] = odometry.pose[0] + (*dt as f32) * 0.001; // Example computation
+        outputs[0] = odometry.pose[0] + (*dt as f32) * 0.001;
         outputs[1] = odometry.pose[1] + (*dt as f32) * 0.001; 
         outputs[2] = odometry.pose[2] + (*dt as f32) * 0.001;
 
@@ -236,7 +280,6 @@ mod app {
           rtt_target::rprintln!("Control> dt: {}", dt); 
           rtt_target::rprintln!("Control> Outputs: {:?}", outputs);
         }
-
       });
 
       Mono::delay(100.millis()).await;
@@ -248,97 +291,108 @@ mod app {
     let serial_if = con.shared.serial; 
     let mut led = con.shared.led_r;
     let odometry = con.shared.odometry;
-    let mut bq_t = (serial_if, odometry); // Locking tuple
+    let mut bq_t = (serial_if, odometry);
     loop {
       led.lock(|led| {
           led.toggle();
       });
       bq_t.lock(|serial, odometry| {
-          //writeln!(serial, "Task1> Hello from RTIC Task1!\r").unwrap();
           writeln!(serial, "Telemetry> Odometry: pose: {:?}, velocity: {:?}\r", 
                    odometry.pose, odometry.velocity).unwrap();
-        
       });
 
       Mono::delay(1000.millis()).await;
     }
   }
-//  #[task(binds = USART3, shared = [serial], local = [read_data, idx])]
-//  fn task_receive(con: task_receive::Context) {
-//    let mut serial_if = con.shared.serial; 
-//
-//    let byte = serial_if.lock(|serial| {
-//      serial.read()
-//    });
-//    let read_data = con.local.read_data;
-//    let idx = con.local.idx; 
-//    if let Ok(byte) = byte {
-//      read_data[*idx as usize] = byte;
-//      *idx += 1;
-//    }
-//    if *idx >= read_data.len() as u8 || read_data[*idx as usize - 1] == 13 {
-//      *idx = 0; // Reset index if it exceeds buffer size
-//      serial_if.lock(|serial| {
-//        let read_str = core::str::from_utf8(&read_data[..]).unwrap_or("Invalid UTF-8"); 
-//        writeln!(serial, "TaskReceive> Read data: {}", read_str).unwrap();
-//      });
-//      // Clear the buffer
-//      for i in 0..read_data.len() {
-//        read_data[i] = 0; // Clear the buffer
-//      }
-//    }
-//  }
 
-  /*#[task(shared = [led_r])]
-  async fn task_blink_led1(con: task_blink_led1::Context) {
-    let mut led = con.shared.led_r;
-    loop {
-      led.lock(|led| {
-          led.toggle();
-      });
+  #[task(shared = [serial, sharkdata, spi], local = [bmp390_cs])]
+  async fn task_baro(con: task_baro::Context) {
+      let serial_if = con.shared.serial; 
+      let sharkdata = con.shared.sharkdata;
+      let spi = con.shared.spi;
+      let cs = con.local.bmp390_cs;
+      
+      let mut bq_t = (serial_if, sharkdata, spi);
+      
+      loop {
+          bq_t.lock(|serial, sharkdata, spi| {
+              // Check if data ready
+              let status = bmp390_read_register(cs, spi, bmp399::STATUS);
+              
+              if (status & 0x60) == 0x60 {
+                  // Read 6 bytes: 3 pressure, 3 temperature
+                  let mut data = [0u8; 6];
+                  bmp390_read_multiple(cs, spi, bmp399::DATA_0, &mut data);
+                  
+                  // Parse raw 24-bit values
+                  let raw_pressure = ((data[2] as u32) << 16) | 
+                                    ((data[1] as u32) << 8) | 
+                                    (data[0] as u32);
+                  
+                  let raw_temp = ((data[5] as u32) << 16) | 
+                                ((data[4] as u32) << 8) | 
+                                (data[3] as u32);
+                  
+                  // Simple conversion (needs calibration for accuracy)
+                  sharkdata.baro[0] = raw_pressure as f32 / 100.0;
+                  sharkdata.baro[1] = raw_temp as f32 / 100.0;
+                  
+                  writeln!(serial, "Baro> P: {:.2} Pa, T: {:.2} C (raw)\r", 
+                          sharkdata.baro[0], sharkdata.baro[1]).unwrap();
+              }
+          });
 
-      Mono::delay(500.millis()).await;
-    }
+          Mono::delay(100.millis()).await;
+      }
   }
-  #[task(shared = [led_g])]
-  async fn task_blink_led2(con: task_blink_led2::Context) {
-    let mut led = con.shared.led_g;
-    loop {
-      led.lock(|led| {
-          led.toggle();
-      });
-
-      Mono::delay(1000.millis()).await;
-    }
-  }
-  #[task(shared = [led_b])]
-  async fn task_blink_led3(con: task_blink_led3::Context) {
-    let mut led = con.shared.led_b;
-    loop {
-      led.lock(|led| {
-          led.toggle();
-      });
-
-      Mono::delay(2000.millis()).await;
-    }
-  }*/
-
-  /*#[task(shared = [serial])]
-  async fn task_telemetry2(con: task_telemetry2::Context) {
-    let mut serial_if = con.shared.serial; 
-    loop {
-      serial_if.lock(|serial| {
-          writeln!(serial, "Task2> Hello from RTIC Task2!\r").unwrap();
-      });
-
-      Mono::delay(500.millis()).await;
-    }
-  }*/
-
-
 }
 
-//#[panic_handler]
-//fn panic(_info: &core::panic::PanicInfo) -> ! {
-//    loop {}
-//}
+// Helper functions outside the app module
+fn bmp390_read_register<SPI, CS>(
+    cs: &mut CS,
+    spi: &mut SPI,
+    reg: u8,
+) -> u8
+where
+    SPI: embedded_hal::blocking::spi::Transfer<u8>,
+    CS: embedded_hal::digital::v2::OutputPin,
+{
+    let mut buf = [reg | bmp399::SPI_READ, 0x00];
+    cs.set_low().ok();
+    spi.transfer(&mut buf).ok();
+    cs.set_high().ok();
+    buf[1]
+}
+
+fn bmp390_write_register<SPI, CS>(
+    cs: &mut CS,
+    spi: &mut SPI,
+    reg: u8,
+    value: u8,
+)
+where
+    SPI: embedded_hal::blocking::spi::Transfer<u8>,
+    CS: embedded_hal::digital::v2::OutputPin,
+{
+    let mut buf = [reg | bmp399::SPI_WRITE, value];
+    cs.set_low().ok();
+    spi.transfer(&mut buf).ok();
+    cs.set_high().ok();
+}
+
+fn bmp390_read_multiple<SPI, CS>(
+    cs: &mut CS,
+    spi: &mut SPI,
+    reg: u8,
+    data: &mut [u8],
+)
+where
+    SPI: embedded_hal::blocking::spi::Transfer<u8>,
+    CS: embedded_hal::digital::v2::OutputPin,
+{
+    cs.set_low().ok();
+    let mut addr = [reg | bmp399::SPI_READ];
+    spi.transfer(&mut addr).ok();
+    spi.transfer(data).ok();
+    cs.set_high().ok();
+}
