@@ -15,9 +15,6 @@ pub mod eredin_types{
     pub pose:     [f32; 7], // x, y, z, qw, qx, qy, qz
     pub velocity: [f32; 6], // vx, vy, vz, wx, wy, wz
   }
-  pub struct SharkData {
-    pub baro:     [f32; 2], // pressure, temperature
-  }
 }
 
 
@@ -26,20 +23,6 @@ use rtic_monotonics::systick::prelude::*;
 
 use core::fmt::Write;
 
-mod bmp399 {
-  pub const CHIP_ID: u8 = 0x00;
-  pub const STATUS: u8 = 0x03;
-  pub const DATA_0: u8 = 0x04;
-  pub const PWR_CTRL: u8 = 0x1B;
-  pub const OSR: u8 = 0x1C;
-  pub const ODR: u8 = 0x1D;
-  pub const CONFIG: u8 = 0x1F;
-  pub const CMD: u8 = 0x7E;
-  pub const EXPECTED_CHIP_ID: u8 = 0x60;
-  pub const SPI_READ: u8 = 0x80;
-  pub const SPI_WRITE: u8 = 0x00;
-}
-
 use stm32h7xx_hal::{
                     prelude::*,
                     gpio::PA0,
@@ -47,10 +30,7 @@ use stm32h7xx_hal::{
                     gpio::PA2,
                     gpio::Output,
                     gpio::PushPull,
-                    gpio::{PA5, PA6, PA7, PF13}, // SPI pins
                     stm32::USART3,
-                    stm32::SPI1, //SPI
-                    spi,
 };
 
 
@@ -67,10 +47,7 @@ mod app {
       led_b:    PA2<Output<PushPull>>,
       serial:   stm32h7xx_hal::serial::Serial<USART3>,
       dt:       u32, 
-      odometry: eredin_types::Odometry,
-      sharkdata: eredin_types::SharkData,
-
-      spi: spi::Spi<SPI1, spi::Enabled>, // SPI para BMP390
+      odometry: eredin_types::Odometry, 
     }
 
     #[local]
@@ -78,7 +55,6 @@ mod app {
       //read_data: [u8; 64],
       //idx: u8,
       rtt_channel: Option<rtt_target::DownChannel>,
-      bmp390_cs: PF13<Output<PushPull>>, // chip select pin for BMP390
     }
 
     #[init]
@@ -134,49 +110,6 @@ mod app {
       let gpiob = dp.GPIOB.split(ccdr.peripheral.GPIOB);
       let gpioa = dp.GPIOA.split(ccdr.peripheral.GPIOA);
 
-      // SPI1 for BMP390
-      let sck = gpioa.pa5.into_alternate();
-      let miso = gpioa.pa6.into_alternate();
-      let mosi = gpioa.pa7.into_alternate();
-      let mut bmp390_cs = gpiob.pf13.into_push_pull_output();
-      bmp390_cs.set_high(); // CS inactivo
-
-      // Configure SPI1
-      let mut spi = dp.SPI1.spi(
-          (sck, miso, mosi),
-          spi::MODE_0,
-          10.MHz(),
-          ccdr.peripheral.SPI1,
-          &ccdr.clocks,
-      );
-
-      // Initialize BMP390
-      writeln!(serial, "Eredin> Initializing BMP390...\r").unwrap();
-      
-      // Small delay for sensor boot
-      for _ in 0..400_000 { cortex_m::asm::nop(); }
-      
-      // Read chip ID
-      let chip_id = bmp390_read_register(&mut bmp390_cs, &mut spi, bmp390::CHIP_ID);
-      
-      if chip_id == bmp390::EXPECTED_CHIP_ID {
-          writeln!(serial, "Eredin> BMP390 detected! (ID: 0x{:02X})\r", chip_id).unwrap();
-          
-          // Soft reset
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::CMD, 0xB6);
-          for _ in 0..4_000_000 { cortex_m::asm::nop(); } // 10ms delay
-          
-          // Configure sensor
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::PWR_CTRL, 0x33); // Enable press+temp
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::OSR, 0x03); // OSR x8, x1
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::ODR, 0x04); // 50Hz
-          bmp390_write_register(&mut bmp390_cs, &mut spi, bmp390::CONFIG, 0x02); // IIR filter
-          
-          writeln!(serial, "Eredin> BMP390 configured!\r").unwrap();
-      } else {
-          writeln!(serial, "Eredin> BMP390 ERROR: Wrong chip ID 0x{:02X}\r", chip_id).unwrap();
-      }
-
       // Pins for LEDs
       let mut led_r = gpioa.pa0.into_push_pull_output();
       let mut led_g = gpioa.pa1.into_push_pull_output();
@@ -219,9 +152,6 @@ mod app {
         pose: [0.0; 7], 
         velocity: [0.0; 6], 
       };
-      let sharkdata: eredin_types::SharkData = eredin_types::SharkData {
-        baro: [0.0; 2],
-      };
 
       // Software task for rtt demo
       #[cfg(feature = "run-hitl")]
@@ -239,14 +169,11 @@ mod app {
           serial,
           dt,
           odometry,
-          sharkdata,
-          spi,
         },
         Local {
           //read_data,
           //idx,
           rtt_channel,
-          bmp390_cs,
         },
       )
   }
@@ -338,13 +265,12 @@ mod app {
     }
   }
 
-  #[task(shared = [serial, spi, led_r, odometry, sharkdata], local = [bmp390_cs])]
+  #[task(shared = [serial, led_r, odometry])]
   async fn task_baro(con: task_baro::Context) {
     let serial_if = con.shared.serial; 
     let mut led = con.shared.led_r;
     let odometry = con.shared.odometry;
     let mut bq_t = (serial_if, odometry); // Locking tuple
-    let sharkdata = con.shared.sharkdata;
     loop {
       led.lock(|led| {
           led.toggle();
@@ -358,48 +284,6 @@ mod app {
 
       Mono::delay(1000.millis()).await;
     }
-  }
-
-  #[task(shared = [serial, sharkdata, spi], local = [bmp390_cs])]
-  async fn task_baro(con: task_baro::Context) {
-      let serial_if = con.shared.serial; 
-      let sharkdata = con.shared.sharkdata;
-      let spi = con.shared.spi;
-      let cs = con.local.bmp390_cs;
-      
-      let mut bq_t = (serial_if, sharkdata, spi); // Locking tuple
-      
-      loop {
-          bq_t.lock(|serial, sharkdata, spi| {
-              // Check if data ready
-              let status = bmp390_read_register(cs, spi, bmp390::STATUS);
-              
-              if (status & 0x60) == 0x60 {
-                  // Read 6 bytes: 3 pressure, 3 temperature
-                  let mut data = [0u8; 6];
-                  bmp390_read_multiple(cs, spi, bmp390::DATA_0, &mut data);
-                  
-                  // Parse raw 24-bit values
-                  let raw_pressure = ((data[2] as u32) << 16) | 
-                                    ((data[1] as u32) << 8) | 
-                                    (data[0] as u32);
-                  
-                  let raw_temp = ((data[5] as u32) << 16) | 
-                                ((data[4] as u32) << 8) | 
-                                (data[3] as u32);
-                  
-                  // Simple conversion (needs calibration for accuracy)
-                  // This is a rough approximation
-                  sharkdata.baro[0] = raw_pressure as f32 / 100.0; // Pressure in Pa
-                  sharkdata.baro[1] = raw_temp as f32 / 100.0;     // Temp approximation
-                  
-                  writeln!(serial, "Baro> P: {:.2} Pa, T: {:.2} C (raw)\r", 
-                          sharkdata.baro[0], sharkdata.baro[1]).unwrap();
-              }
-          });
-
-          Mono::delay(100.millis()).await; // 10Hz barometer reading
-      }
   }
 //  #[task(binds = USART3, shared = [serial], local = [read_data, idx])]
 //  fn task_receive(con: task_receive::Context) {
@@ -480,54 +364,3 @@ mod app {
 //fn panic(_info: &core::panic::PanicInfo) -> ! {
 //    loop {}
 //}
-
-
-// Helper functions
-fn bmp390_read_register<SPI, CS>(
-    cs: &mut CS,
-    spi: &mut SPI,
-    reg: u8,
-) -> u8
-where
-    SPI: embedded_hal::blocking::spi::Transfer<u8>,
-    CS: embedded_hal::digital::v2::OutputPin,
-{
-    let mut buf = [reg | bmp390::SPI_READ, 0x00];
-    cs.set_low().ok();
-    spi.transfer(&mut buf).ok();
-    cs.set_high().ok();
-    buf[1]
-}
-
-fn bmp390_write_register<SPI, CS>(
-    cs: &mut CS,
-    spi: &mut SPI,
-    reg: u8,
-    value: u8,
-)
-where
-    SPI: embedded_hal::blocking::spi::Transfer<u8>,
-    CS: embedded_hal::digital::v2::OutputPin,
-{
-    let mut buf = [reg | bmp390::SPI_WRITE, value];
-    cs.set_low().ok();
-    spi.transfer(&mut buf).ok();
-    cs.set_high().ok();
-}
-
-fn bmp390_read_multiple<SPI, CS>(
-    cs: &mut CS,
-    spi: &mut SPI,
-    reg: u8,
-    data: &mut [u8],
-)
-where
-    SPI: embedded_hal::blocking::spi::Transfer<u8>,
-    CS: embedded_hal::digital::v2::OutputPin,
-{
-    cs.set_low().ok();
-    let mut addr = [reg | bmp390::SPI_READ];
-    spi.transfer(&mut addr).ok();
-    spi.transfer(data).ok();
-    cs.set_high().ok();
-}
