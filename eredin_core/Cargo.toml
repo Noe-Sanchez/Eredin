@@ -17,6 +17,7 @@ panic-rtt-target = { version = "0.2.0"}
 stm32h7xx-hal = { version = "0.16.0", features = ["stm32h743", "rt"] }
 rtic = { version = "2.0", features = ["thumbv7-backend"] }
 rtic-monotonics = { version = "2.1.0", features = ["stm32_tim2", "cortex-m-systick"] }
+embedded-hal = "0.2.0"
 
 [profile.dev]
 panic = "abort"

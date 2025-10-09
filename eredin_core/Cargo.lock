@@ -126,6 +126,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
+ "embedded-hal 0.2.7",
  "panic-halt",
  "panic-rtt-target",
  "rtic",
