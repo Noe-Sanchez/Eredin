@@ -67,9 +67,19 @@
       <self_collide>false</self_collide>
     </model>
     <include>
-      <uri>file:///root/PX4-Autopilot/Tools/simulation/gz/models/x500</uri>
-      <name>x500</name>
+      <uri>model://sdf/x500_1</uri>
+      <name>x500_1</name>
       <pose>0.064115471284398318 -0.019022021722711422 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://sdf/x500_2</uri>
+      <name>x500_2</name>
+      <pose>1.064115471284398318 -0.019022021722711422 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://sdf/x500_3</uri>
+      <name>x500_3</name>
+      <pose>2.064115471284398318 -0.019022021722711422 0 0 0 0</pose>
     </include>
     <light name='sun' type='directional'>
       <pose>0 0 10 0 0 0</pose>

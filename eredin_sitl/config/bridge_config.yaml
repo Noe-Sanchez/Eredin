@@ -1,0 +1,33 @@
+# MOTORS
+
+- topic_name:     "/x500_1/command/motor_speed"
+  ros_type_name:  "actuator_msgs/msg/Actuators"
+  gz_type_name:   "gz.msgs.Actuators"
+  direction:      ROS_TO_GZ
+
+- topic_name:     "/x500_2/command/motor_speed"
+  ros_type_name:  "actuator_msgs/msg/Actuators"
+  gz_type_name:   "gz.msgs.Actuators"
+  direction:      ROS_TO_GZ
+
+- topic_name:     "/x500_3/command/motor_speed"
+  ros_type_name:  "actuator_msgs/msg/Actuators"
+  gz_type_name:   "gz.msgs.Actuators"
+  direction:      ROS_TO_GZ
+
+# ODOMETRY
+
+- topic_name:     "/model/x500_1/odometry"
+  ros_type_name:  "nav_msgs/msg/Odometry"
+  gz_type_name:   "gz.msgs.Odometry"
+  direction:      GZ_TO_ROS
+
+- topic_name:     "/model/x500_2/odometry"
+  ros_type_name:  "nav_msgs/msg/Odometry"
+  gz_type_name:   "gz.msgs.Odometry"
+  direction:      GZ_TO_ROS
+
+- topic_name:     "/model/x500_3/odometry"
+  ros_type_name:  "nav_msgs/msg/Odometry"
+  gz_type_name:   "gz.msgs.Odometry"
+  direction:      GZ_TO_ROS

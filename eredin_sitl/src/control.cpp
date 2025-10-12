@@ -11,6 +11,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include <tf2_ros/transform_broadcaster.h>
+#include "geometry_msgs/msg/wrench.hpp"
 
 using namespace std::chrono_literals;
 
@@ -19,11 +20,13 @@ class EController : public rclcpp::Node{
     EController(): Node("control_node"){
 
       // Subscribers
-      sim_pose_subscriber     = this->create_subscription<nav_msgs::msg::Odometry>("/sim/pose", 10, std::bind(&EController::sim_pose_callback, this, std::placeholders::_1));
-      desired_pose_subscriber = this->create_subscription<nav_msgs::msg::Odometry>("/control/reference/pose", 10, std::bind(&EController::desired_pose_callback, this, std::placeholders::_1));
+      sim_pose_subscriber     = this->create_subscription<nav_msgs::msg::Odometry>("/model/x500_1/odometry", 10, std::bind(&EController::sim_pose_callback, this, std::placeholders::_1));
+      desired_pose_subscriber = this->create_subscription<nav_msgs::msg::Odometry>("/control_1/reference/pose", 10, std::bind(&EController::desired_pose_callback, this, std::placeholders::_1));
+      //gains_subscriber        = this->create_subscription<geometry_msgs::msg::Wrench>("/control_1/gains", 10, std::bind(&EController::gains_callback, this, std::placeholders::_1));
+      error_publisher        = this->create_publisher<geometry_msgs::msg::PoseStamped>("/control_1/error", 10);
 
       // Publishers
-      motor_publisher = this->create_publisher<actuator_msgs::msg::Actuators>("/sim/motor_speed", 10);
+      motor_publisher = this->create_publisher<actuator_msgs::msg::Actuators>("/x500_1/command/motor_speed", 10);
       tf_broadcaster  = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
       control_timer = this->create_wall_timer(10ms, std::bind(&EController::control_callback, this));
@@ -43,12 +46,15 @@ class EController : public rclcpp::Node{
       kQ = kT*0.25; 
       l  = 0.25;
 
-      kp_lin << 0.5, 0.5, 16.5;
-      kd_lin << 0.5, 0.5, 5.5;
+      kp_lin << 1.5,   1.5,   16.5;
+      kd_lin << 3.0,   3.0,   5.5;
+      ki_lin << 0.1,   0.1,   1.0;
       kp_ang << 10.15, 10.15, 40.5;
-      kd_ang << 5.0, 5.0, 15.0;
+      kd_ang << 7.0,   7.0,   15.0;
 
       e_lin         << 0.0, 0.0, 0.0;
+      e_lin_prev    << 0.0, 0.0, 0.0;
+      e_lin_int     << 0.0, 0.0, 0.0;
       e_dot_lin     << 0.0, 0.0, 0.0;
       sim_pos       << 0.0, 0.0, 0.0;
       desired_pos   << 0.0, 0.0, 1.0;
@@ -83,6 +89,22 @@ class EController : public rclcpp::Node{
       		     -kQ,    -kQ,   kQ,   kQ;
 
       motor_speed.velocity.resize(4);
+    }
+
+    void gains_callback(const geometry_msgs::msg::Wrench::SharedPtr msg){
+      kp_lin(0) = msg->force.x;
+      kp_lin(1) = msg->force.y;
+
+      kd_lin(0) = msg->force.z;
+      kd_lin(1) = msg->torque.x;
+
+      ki_lin(0) = msg->torque.y;
+      ki_lin(1) = msg->torque.z;
+
+      std::cout << "Gains updated!" << std::endl;
+      std::cout << "kp_lin: " << kp_lin.transpose() << std::endl;
+      std::cout << "kd_lin: " << kd_lin.transpose() << std::endl;
+      std::cout << "ki_lin: " << ki_lin.transpose() << std::endl;
     }
 
     void sim_pose_callback(const nav_msgs::msg::Odometry::SharedPtr msg){
@@ -153,8 +175,15 @@ class EController : public rclcpp::Node{
       e_lin     = desired_pos - sim_pos;
       e_dot_lin = desired_vel - sim_vel;
 
+      // Integrate linear error
+      e_lin_int = e_lin_int + 0.5*(e_lin + e_lin_prev)*0.01;
+      e_lin_prev = e_lin;
+
+      std::cout << "e_lin_int: " << e_lin_int.transpose() << std::endl;
+
       // Compute linear control (angular control needs fu)
-      uaux_lin = kp_lin.cwiseProduct(e_lin) + kd_lin.cwiseProduct(e_dot_lin);
+      //uaux_lin = kp_lin.cwiseProduct(e_lin) + kd_lin.cwiseProduct(e_dot_lin);
+      uaux_lin = kp_lin.cwiseProduct(e_lin) + kd_lin.cwiseProduct(e_dot_lin) + ki_lin.cwiseProduct(e_lin_int); 
 
       // Rotate control
       fu = -uaux_lin;
@@ -216,6 +245,18 @@ class EController : public rclcpp::Node{
       motor_speed.velocity[3] = std::max(0.0, std::min(2000.0, motor_speeds(3)));
       motor_publisher->publish(motor_speed);
 
+      // Publish error
+      error_msg.header.stamp = this->get_clock()->now();
+      error_msg.header.frame_id = "world";
+      error_msg.pose.position.x = e_lin(0);
+      error_msg.pose.position.y = e_lin(1);
+      error_msg.pose.position.z = e_lin(2);
+      error_msg.pose.orientation.w = qe.w(); 
+      error_msg.pose.orientation.x = qe.x();
+      error_msg.pose.orientation.y = qe.y();
+      error_msg.pose.orientation.z = qe.z();
+      error_publisher->publish(error_msg);
+
     }
 
   private:
@@ -224,9 +265,12 @@ class EController : public rclcpp::Node{
     nav_msgs::msg::Odometry desired_pose;
     geometry_msgs::msg::TransformStamped sim_tf;
     actuator_msgs::msg::Actuators motor_speed;
+    geometry_msgs::msg::PoseStamped error_msg;
 
     Eigen::Matrix3d    J;             // Inertia tensor, kg m^2
     Eigen::Vector3d    e_lin;         // Linear error
+    Eigen::Vector3d    e_lin_prev;    // Linear error previous
+    Eigen::Vector3d    e_lin_int;     // Linear error integral
     Eigen::Vector3d    e_dot_lin;     // Linear error derivative
     Eigen::Vector3d    e_ang;         // Angular error
     Eigen::Vector3d    e_dot_ang;     // Angular error derivative
@@ -243,6 +287,7 @@ class EController : public rclcpp::Node{
     Eigen::Vector3d    ft;            // Thrust vector
     Eigen::Vector3d    kp_lin;        // Linear p gains
     Eigen::Vector3d    kd_lin;        // Linear d gains
+    Eigen::Vector3d    ki_lin;        // Linear i gains
     Eigen::Vector3d    kp_ang;        // Angular p gains
     Eigen::Vector3d    kd_ang;        // Angular d gains
     Eigen::Vector3d    g_vector;      // Gravity vector
@@ -268,8 +313,10 @@ class EController : public rclcpp::Node{
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sim_pose_subscriber;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr desired_pose_subscriber;
+    rclcpp::Subscription<geometry_msgs::msg::Wrench>::SharedPtr gains_subscriber;
 
-    rclcpp::Publisher<actuator_msgs::msg::Actuators>::SharedPtr motor_publisher;
+    rclcpp::Publisher<actuator_msgs::msg::Actuators>::SharedPtr   motor_publisher;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr error_publisher;
 
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
 
