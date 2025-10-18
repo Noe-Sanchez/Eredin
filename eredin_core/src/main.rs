@@ -262,11 +262,11 @@ mod app {
     let spi1 = con.shared.spi;
     let serial = con.shared.serial1;
     let cs_baro = con.shared.cs_baro;
-    let led_r = con.shared.led_r;
-    let led_g = con.shared.led_g;
-    let led_b = con.shared.led_b;
+    let _led_r = con.shared.led_r;
+    let _led_g = con.shared.led_g;
+    let _led_b = con.shared.led_b;
     let mut p_lock = (spi1, serial, cs_baro);
-    let mut q_lock = (spi1, serial, cs_baro, led_r, led_g, led_b);
+    //let mut q_lock = (spi1, serial, cs_baro, led_r, led_g, led_b);
 
     //<<<<<<<<<<< Abstract as begin function
     // Ask for chip id and print to rtt
@@ -316,8 +316,8 @@ mod app {
     
 
     loop {
-      //p_lock.lock(|spi, serial, cs_baro| {
-      q_lock.lock(|spi, serial, cs_baro, led_r, led_g, led_b| {
+      p_lock.lock(|spi, serial, cs_baro| {
+      //q_lock.lock(|spi, serial, cs_baro, _led_r, _led_g, _led_b| {
       
         // Reserved readings, for exploiting full-duplex SPI
         let mut tx_buf_data: [u8; 8] = [0x00; 8];
@@ -326,7 +326,8 @@ mod app {
         spi.transfer(&mut tx_buf_data).unwrap();
         cs_baro.set_high(); // Deassert CS
         //writeln!(serial, "Baro> Data regs read: {:02X?}\r", tx_buf_data).unwrap();
-        writeln!(serial, "Baro> Data regs read: {:02X?}\r", &tx_buf_data[2..8]).unwrap();
+        
+        //writeln!(serial, "Baro> Data regs read: {:02X?}\r", &tx_buf_data[2..8]).unwrap();
 
         // Post process data
         let raw_accelx: i16 = i16::from_be_bytes([tx_buf_data[3], tx_buf_data[2]]); // MSB, LSB
@@ -339,7 +340,8 @@ mod app {
         let accel_y_g: f32 = (raw_accely as f32) * SCALE_FACTOR;
         let accel_z_g: f32 = (raw_accelz as f32) * SCALE_FACTOR;
 
-        writeln!(serial, "Baro> Accels [g]: X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
+        //writeln!(serial, "Baro> Accels [g]: X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
+        writeln!(serial, "X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
 
       });
 
