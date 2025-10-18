@@ -1,4 +1,4 @@
-//#![deny(warnings)]
+#![deny(warnings)]
 #![no_main]
 #![no_std]
 
@@ -130,8 +130,10 @@ mod app {
 
       // Set LEDs to off initially
       led_r.set_high();
-      led_g.set_low();
-      led_b.set_low();
+      //led_g.set_low();
+      //led_b.set_low();
+      led_g.set_high();
+      led_b.set_high();
 
       // Pins for USART3
       let tx1 = gpiob.pb10.into_alternate();
@@ -181,7 +183,7 @@ mod app {
       cs_baro.set_low(); // Force SPI mode during sensor power-up
 
       // Small delay to ensure sensor sees CSB low during startup
-      for _ in 0..1_000_000 { cortex_m::asm::nop(); }
+      for _ in 0..2_500_000 { cortex_m::asm::nop(); }
 
       // Now you can set it high (idle)
       cs_baro.set_high();
@@ -215,13 +217,9 @@ mod app {
       //writeln!(serial, "Eredin> Starting Scheduler...\r").unwrap();
 
       // Schedule software tasks
-      //task_blink_led1::spawn().ok();
-      //task_blink_led2::spawn().ok();
-      //task_blink_led3::spawn().ok();
-      task_telemetry::spawn().ok();
-      //task_telemetry2::spawn().ok();
+      //task_telemetry::spawn().ok();
       //task_compute_control::spawn().ok(); // Actual task lol
-      //task_baro::spawn().ok();
+      task_baro::spawn().ok();
       let read_data: [u8; 64] = [0; 64]; 
       let idx: u8 = 0;
 
@@ -234,7 +232,7 @@ mod app {
       #[cfg(feature = "run-hitl")]
       {
         rtt_target::rprintln!("RTT> Starting RTT task...");
-        task_rtt_receive::spawn().ok();
+        //task_rtt_receive::spawn().ok();
       }
 
       // Resources for tasks
@@ -258,132 +256,110 @@ mod app {
       )
   }
 
-  #[task(shared = [spi, serial1, cs_baro])]
+  //#[task(shared = [spi, serial1, cs_baro])]
+  #[task(shared = [spi, serial1, cs_baro, led_r, led_g, led_b])]
   async fn task_baro(con: task_baro::Context) {
     let spi1 = con.shared.spi;
     let serial = con.shared.serial1;
     let cs_baro = con.shared.cs_baro;
+    let led_r = con.shared.led_r;
+    let led_g = con.shared.led_g;
+    let led_b = con.shared.led_b;
     let mut p_lock = (spi1, serial, cs_baro);
+    let mut q_lock = (spi1, serial, cs_baro, led_r, led_g, led_b);
 
-    let tx_buf_init: [u8; 2] = [0x7D, 0x04]; // Write 0x04 to 0x7D to set normal mode
+    //<<<<<<<<<<< Abstract as begin function
+    // Ask for chip id and print to rtt
+    loop {
+      let mut tx_buf_chipid: [u8; 3] = [0x00 | 0x80, 0x00, 0x00]; // Read register 0x0F, dummy byte
+      p_lock.lock(|spi, serial, cs_baro| {
+        cs_baro.set_low(); // Assert CS
+        spi.transfer(&mut tx_buf_chipid).unwrap();
+        cs_baro.set_high(); // Deassert CS
+        writeln!(serial, "Baro> Chip ID read: {:02X?}\r", tx_buf_chipid).unwrap();
+      });
+
+      // If second element is 0x1E, break
+      if tx_buf_chipid[2] == 0x1E {
+          break;
+      }
+
+      Mono::delay(1000.millis()).await;
+    }
+    //<<<<<<<<<<<
+
+    /*
+    //<<<<<<<<<< Abstract as init function (maybe inside begin)
+    // Turn on sensor
+    let tx_buf_init: [u8; 2] = [0x7E, 0xB6]; // Buffer to write powerup to sensor
     p_lock.lock(|spi, serial, cs_baro| {
-      // Write to 0x7D without read
       cs_baro.set_low(); // Assert CS
       spi.write(&tx_buf_init).unwrap();
       cs_baro.set_high(); // Deassert CS
       writeln!(serial, "Baro> Initialization write done\r").unwrap();
     });
 
-    /*p_lock.lock(|spi, _serial, cs_baro| {
-      // Write to 0x7D without read
-      cs_baro.set_low(); // Assert CS
-      spi.write(&[0x7D, 0x04]).unwrap();
-      cs_baro.set_high(); // Deassert CS
-    });*/
+    Mono::delay(100.millis()).await;
 
+    //>>>>>>>>>*/
+    
+    //<<<<<<<<<< Abstract as init function (maybe inside begin)
+    // Turn on sensor
+    let tx_buf_init: [u8; 2] = [0x7D, 0x04]; // Buffer to write powerup to sensor
+    p_lock.lock(|spi, serial, cs_baro| {
+      cs_baro.set_low(); // Assert CS
+      spi.write(&tx_buf_init).unwrap();
+      cs_baro.set_high(); // Deassert CS
+      writeln!(serial, "Baro> Initialization write done\r").unwrap();
+    });
+    //>>>>>>>>>
+    
 
     loop {
-      p_lock.lock(|spi, serial, cs_baro| {
-        // Example SPI transaction
-        //let mut baro_data: [u8; 2] = [0x98, 0x98];
-        //let mut baro_data: [u8; 1] = [0x00];
-        //let mut baro_data: [u8; 1] = [0x00];
-        //let mut tx_buf: [u8; 2] = [0x83, 0x00]; // Read register 0x00, dummy byte
-        let mut tx_buf: [u8; 2] = [0x12 | 0x80, 0x00]; // Read register 0x00, dummy byte
-        //let mut _rx_buf: [u8; 2] = [0x00, 0x00];
-        //let mut tx_buf: [u8; 3] = [0x8C, 0x00, 0x00]; // Read register 0x00, dummy byte
-        //let mut baro_data: [u8; 2] = [0x89, 0x89];
-        //spi.transfer(&mut baro_data).unwrap(); // Send dummy bytes to read 
-        //spi.send(0x01).ok(); // Send read command
-        
-        cs_baro.set_low(); // Assert CS
-        spi.transfer(&mut tx_buf).unwrap();
+      //p_lock.lock(|spi, serial, cs_baro| {
+      q_lock.lock(|spi, serial, cs_baro, led_r, led_g, led_b| {
+      
+        // Reserved readings, for exploiting full-duplex SPI
+        let mut tx_buf_data: [u8; 8] = [0x00; 8];
+        tx_buf_data[0] = 0x12 | 0x80;
+        cs_baro.set_low(); // Assert CS  
+        spi.transfer(&mut tx_buf_data).unwrap();
         cs_baro.set_high(); // Deassert CS
-        let data1: u16 = tx_buf[1] as u16;
-        
-        writeln!(serial, "Baro> Received: {:02X?}\r", tx_buf).unwrap();
-        
-        tx_buf = [0x13 | 0x80, 0x00]; // Read register 0x00, dummy byte
+        //writeln!(serial, "Baro> Data regs read: {:02X?}\r", tx_buf_data).unwrap();
+        writeln!(serial, "Baro> Data regs read: {:02X?}\r", &tx_buf_data[2..8]).unwrap();
 
-        cs_baro.set_low(); // Assert CS
-        spi.transfer(&mut tx_buf).unwrap();
-        cs_baro.set_high(); // Deassert CS
-        let data2: u16 = tx_buf[1] as u16;
+        // Post process data
+        let raw_accelx: i16 = i16::from_be_bytes([tx_buf_data[3], tx_buf_data[2]]); // MSB, LSB
+        let raw_accely: i16 = i16::from_be_bytes([tx_buf_data[5], tx_buf_data[4]]); // MSB, LSB
+        let raw_accelz: i16 = i16::from_be_bytes([tx_buf_data[7], tx_buf_data[6]]); // MSB, LSB
+                                                                                    
+        const SCALE_FACTOR: f32 = 0.183105 * 0.01; // mg/LSB
 
-        let data: u16 = (data2 << 8) | data1;
-        //let data = data1 * 256;
-        //let data = data2;
+        let accel_x_g: f32 = (raw_accelx as f32) * SCALE_FACTOR;
+        let accel_y_g: f32 = (raw_accely as f32) * SCALE_FACTOR;
+        let accel_z_g: f32 = (raw_accelz as f32) * SCALE_FACTOR;
 
-        writeln!(serial, "Baro> Received: {:02X?}\r", tx_buf).unwrap();
-        // Print raw data
-        writeln!(serial, "Baro> Raw data: 0x{:04X}\r", data).unwrap();
-
-        // Convert to mg assuming 2g range and 16-bit resolution
-        //let accz: f64 = (data as i16) as f64 / 32768.0 * 1000 * 128.0 * 1.5;
-        let accz: f64 = (data as i16) as f64 / 32768.0 * 1692.0;
-        // Print as decimal
-        writeln!(serial, "Baro> AccZ: {:.2} mg\r", accz).unwrap();
-
-        //writeln!(serial, "Baro> AccZ: {} mg\r", accz).unwrap();
-        // Try a for loop from 0 to FF to see if we can read anything
-
-        /*for reg in 0x80u8..=0xFFu8 {
-          tx_buf[0] = reg; 
-          tx_buf[1] = 0x00; // Dummy byte
-          cs_baro.set_low(); // Assert CS
-          spi.transfer(&mut tx_buf).unwrap();
-          writeln!(serial, "Baro> Reg 0x{:02X}: 0x{:02X}\r", reg, tx_buf[1]).unwrap();
-          // Asembly NOP delay of 100ms
-          for _ in 0..100_000 { cortex_m::asm::nop(); }
-          cs_baro.set_high(); // Deassert CS
-        }*/
-
-        //cs_baro.set_high(); // Deassert CS
-        //cs_baro.set_low(); // Deassert CS
-        
-        //spi.transfer(&mut tx_buf).unwrap();
-        
-        //writeln!(serial, "Reading baro").unwrap();
-        //cs_baro.set_low(); // Assert CS
-        //block!(spi.send(0x80)).ok();
-        //spi.send(0x00).unwrap(); // Send dummy byte to read
-        //baro_data[0] = spi.read().unwrap();
-        //cs_baro.set_high(); // Deassert CS
-        //baro_data[0] = spi.read().unwrap();
-        //baro_data[0] = spi.read().unwrap();
-        // Slice into first byte
-        //baro_data[0] = spi.read().unwrap();
-        //spi.send(0x05).unwrap();
-        //baro_data[1] = spi.read().unwrap();
-        //spi.send(0x06).unwrap();
-        //baro_data[2] = spi.read().unwrap();
-
-        // Print all tx_buf
-        //writeln!(serial, "Baro> Sent: {:02X?}\r", tx_buf).unwrap();
-
-        //writeln!(serial, "Baro> Chip ID: 0x{:02X} (expected 0x60)\r", tx_buf[1]).unwrap();
-        //writeln!(serial, "Baro> Raw data: {:02X?}\r", baro_data).unwrap();
-        //writeln!(serial, "Baro> SPI transaction done\r").unwrap();
-        // Print single byte
-        //writeln!(serial, "Baro> SPI read byte: {:02X}\r", word).unwrap();
+        writeln!(serial, "Baro> Accels [g]: X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
 
       });
+
       Mono::delay(500.millis()).await;
     }
   }
+
   #[task(binds = UART4, shared = [serial2, serial1, led_r], local = [read_data, idx])]
   fn task_receive(con: task_receive::Context) {
-    let mut serial1_if = con.shared.serial1; 
-    let mut serial2_if = con.shared.serial2;
-    let mut led_r      = con.shared.led_r;
+    let _serial1_if = con.shared.serial1; 
+    let _serial2_if = con.shared.serial2;
+    let _led_r      = con.shared.led_r;
     
     //let byte = serial2_if.lock(|serial2_if| {
     //  serial2_if.read()
     //});
 
-    led_r.lock(|led| {
-        led.toggle();
-    });
+    //led_r.lock(|led| {
+    //    led.toggle();
+    //});
 
     /*serial1_if.lock(|serial1_if| {
       serial1_if.write_str("Interrupt> UART4 RX interrupt\r").ok();
@@ -460,53 +436,42 @@ mod app {
     }
   }
 
-  #[task(shared = [serial1, led_g, led_b, odometry])]
+  //#[task(shared = [serial1, led_g, led_b, odometry])]
+  #[task(shared = [led_g, led_b])]
   async fn task_telemetry(con: task_telemetry::Context) {
-    let serial_if = con.shared.serial1; 
     let ledg = con.shared.led_g;
     let ledb = con.shared.led_b;
-    let odometry = con.shared.odometry;
-    //let mut bq_t = (serial_if, odometry); // Locking tuple
     let mut qk = (ledg, ledb);
+
     loop {
-      //led.lock(|led| {
-      //    led.toggle();
-      //});
       qk.lock(|ledg, ledb| {
           ledg.set_low();
           ledb.set_low();
+      });
 
-          // asm nop delay 100ms
-          for _ in 0..100_000 { cortex_m::asm::nop(); }
+      Mono::delay(100.millis()).await;
 
+      qk.lock(|ledg, ledb| {
           ledg.set_high();
           ledb.set_high();
+      });
 
-          // asm nop delay 100ms
-          for _ in 0..100_000 { cortex_m::asm::nop(); }
+      Mono::delay(100.millis()).await;
 
+      qk.lock(|ledg, ledb| {
           ledg.set_low();
           ledb.set_low();
+      });
 
-          // asm nop delay 100ms
-          for _ in 0..100_000 { cortex_m::asm::nop(); }
+      Mono::delay(100.millis()).await;
 
+      qk.lock(|ledg, ledb| {
           ledg.set_high();
           ledb.set_high();
-
-          // asm nop delay 100ms
-          for _ in 0..1_900_000 { cortex_m::asm::nop(); }
-
-
       });
-      //bq_t.lock(|serial, odometry| {
-      //    //writeln!(serial, "Task1> Hello from RTIC Task1!\r").unwrap();
-      //    writeln!(serial, "Telemetry> Odometry: pose: {:?}, velocity: {:?}\r", 
-      //             odometry.pose, odometry.velocity).unwrap();
-      //  
-      //});
 
-      Mono::delay(1000.millis()).await;
+      Mono::delay(1_900.millis()).await;
+
     }
   }
 }
