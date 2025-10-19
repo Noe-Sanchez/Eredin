@@ -30,6 +30,7 @@ use stm32h7xx_hal::{
   gpio::PA2,
   //gpio::PF13,
   gpio::PG0,
+  gpio::PF15,
   gpio::Output,
   gpio::PushPull,
   stm32::USART3,
@@ -58,6 +59,7 @@ mod app {
       // alternate 
       //cs_baro:  PF13<Output<PushPull>>, // Chip select for barometer
       cs_baro:  PG0<Output<PushPull>>, // Chip select for barometer on alternate pin
+      cs_gyro:  PF15<Output<PushPull>>, // Chip select for barometer on alternate pin
     }
     #[local]
     struct Local {
@@ -181,12 +183,16 @@ mod app {
       let mut cs_baro = othercs3; // Use other CS pin for baro 
       //cs_baro.set_high(); // Deassert CS
       cs_baro.set_low(); // Force SPI mode during sensor power-up
+    
+      let mut cs_gyro = othercs2; // gyro CS
+      cs_gyro.set_low();
 
       // Small delay to ensure sensor sees CSB low during startup
       for _ in 0..2_500_000 { cortex_m::asm::nop(); }
 
       // Now you can set it high (idle)
       cs_baro.set_high();
+      cs_gyro.set_high();
 
       //writeln!(serial, "Eredin> Configuring SPI2...\r").unwrap();
 
@@ -220,6 +226,7 @@ mod app {
       //task_telemetry::spawn().ok();
       //task_compute_control::spawn().ok(); // Actual task lol
       task_baro::spawn().ok();
+      task_gyro::spawn().ok();
       let read_data: [u8; 64] = [0; 64]; 
       let idx: u8 = 0;
 
@@ -247,6 +254,7 @@ mod app {
           odometry,
           spi: spi_if, 
           cs_baro,
+          cs_gyro,
         },
         Local {
           read_data,
@@ -340,9 +348,112 @@ mod app {
         let accel_y_g: f32 = (raw_accely as f32) * SCALE_FACTOR;
         let accel_z_g: f32 = (raw_accelz as f32) * SCALE_FACTOR;
 
-        //writeln!(serial, "Baro> Accels [g]: X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
-        writeln!(serial, "X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
+        writeln!(serial, "Accel X: {:.3}, Y: {:.3}, Z: {:.3}\r", accel_x_g, accel_y_g, accel_z_g).unwrap();
 
+      });
+
+      Mono::delay(500.millis()).await;
+    }
+  }
+
+  #[task(shared = [spi, serial1, cs_gyro, led_r, led_g, led_b])]
+  async fn task_gyro(con: task_gyro::Context) {
+    let spi1 = con.shared.spi;
+    let serial = con.shared.serial1;
+    let cs_gyro = con.shared.cs_gyro;
+    let _led_r = con.shared.led_r;
+    let _led_g = con.shared.led_g;
+    let _led_b = con.shared.led_b;
+    let mut p_lock = (spi1, serial, cs_gyro);
+
+    //<<<<<<<< Abstract as begin function >>>>>>>>
+    // Ask for chip id and print to rtt
+    loop {
+      let mut tx_buf_chipid: [u8; 3] = [0x00 | 0x80, 0x00, 0x00]; // Read register 0x00, dummy byte
+      p_lock.lock(|spi, serial, cs_gyro| {
+        cs_gyro.set_low(); // Assert CS
+        spi.transfer(&mut tx_buf_chipid).unwrap();
+        cs_gyro.set_high(); // Deassert CS
+        writeln!(serial, "Gyro> Chip ID read: {:02X?}\r", tx_buf_chipid).unwrap();
+      });
+
+      // If second element is 0x0F, break
+      if tx_buf_chipid[1] == 0x0F {
+          break;
+      }
+
+      Mono::delay(1000.millis()).await;
+    }
+
+    // Gyro está always-on por hardware
+    // SETTING RANGE
+    let tx_buf_range: [u8; 2] = [0x0F, 0x00]; // Buffer to write powerup to sensor
+    p_lock.lock(|spi, serial, cs_gyro| {
+      cs_gyro.set_low(); // Assert CS
+      spi.write(&tx_buf_range).unwrap();
+      cs_gyro.set_high(); // Deassert CS
+      writeln!(serial, "Gyro> Range set write done\r").unwrap();
+    });
+    Mono::delay(10.millis()).await;
+
+    // READING RANGE
+    let mut tx_buf_read_range: [u8; 3] = [0x0F | 0x80, 0x00, 0x00]; // Buffer para lectura
+
+    let gyro_range = p_lock.lock(|spi, serial, cs| {
+        cs.set_low();
+        spi.transfer(&mut tx_buf_read_range).unwrap(); // TX y RX simultáneo
+        cs.set_high();
+
+        let range = tx_buf_read_range[1]; // o tx_buf_read_range[1] según el sensor
+        writeln!(serial, "Gyro> Range = 0x{:02X}\r", range).unwrap();
+        range
+    });
+    Mono::delay(10.millis()).await;
+
+    // SETTING BANDWIDTH
+    let tx_buf_bw: [u8; 2] = [0x10, 0x80]; // Buffer to reset Bandwidth
+    p_lock.lock(|spi, serial, cs_gyro| {
+      cs_gyro.set_low(); // Assert CS
+      spi.write(&tx_buf_bw).unwrap();
+      cs_gyro.set_high(); // Deassert CS
+      writeln!(serial, "Gyro> Bandwidth set ODR\r").unwrap();
+    });
+    Mono::delay(10.millis()).await;
+    
+    // Definir Scale Factor ( mº/s per LSB )
+    let GYRO_SCALE_FACTOR: f32 = match gyro_range {
+      0x00 => 61.0 / 1000.0,      // ±2000°/s → 61.0 m°/s per LSB
+      0x01 => 30.5 / 1000.0,      // ±1000°/s → 30.5 m°/s per LSB
+      0x02 => 15.3 / 1000.0,      // ±500°/s  → 15.3 m°/s per LSB
+      0x03 => 7.6 / 1000.0,       // ±250°/s  → 7.6 m°/s per LSB
+      0x04 => 3.8 / 1000.0,       // ±125°/s  → 3.8 m°/s per LSB
+      _ => 61.0 / 1000.0,         // Default: ±2000°/s
+    };
+
+    loop {
+      p_lock.lock(|spi, serial, cs_gyro| {
+          let mut tx_buf_data: [u8; 8] = [0x00; 8];
+          tx_buf_data[0] = 0x02 | 0x80; // 0x02 corresponde a RATE_X_LSB
+          
+          cs_gyro.set_low();
+          spi.transfer(&mut tx_buf_data).unwrap();
+          cs_gyro.set_high();
+
+          // IMPRIMIR TODO EL BUFFER
+          // writeln!(serial, "Full buffer: {:02X?}\r", tx_buf_data).unwrap();
+
+          // Post process data with Little-Endian ( esto equivale a la fórmula indicadad en datasheet: Rate_X: RATE_X_MSB * 256 + RATE_X_LSB )
+          let raw_gyro_y: i16 = i16::from_le_bytes([tx_buf_data[1], tx_buf_data[2]]); // LSB, MSB  (Dummy area)
+          let raw_gyro_x: i16 = i16::from_le_bytes([tx_buf_data[3], tx_buf_data[4]]); // LSB, MSB
+          let raw_gyro_z: i16 = i16::from_le_bytes([tx_buf_data[5], tx_buf_data[6]]); // LSB, MSB
+          
+          // Conversión a grados por segundo ( º/s )
+          let gyro_x: f32 = (raw_gyro_x as f32) * GYRO_SCALE_FACTOR;
+          let gyro_y: f32 = (raw_gyro_y as f32) * GYRO_SCALE_FACTOR;
+          let gyro_z: f32 = (raw_gyro_z as f32) * GYRO_SCALE_FACTOR;
+
+          writeln!(serial, "Gyro X:{:.2} Y:{:.2} Z:{:.2}\r", 
+                  gyro_x, gyro_y, gyro_z).unwrap();
       });
 
       Mono::delay(500.millis()).await;
