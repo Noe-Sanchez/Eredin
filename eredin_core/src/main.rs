@@ -5,11 +5,11 @@
 #[cfg(feature = "run-hitl")]
 mod hitl_imports {
   use panic_rtt_target as _;
-  //use rtt_target::{rprintln, rtt_init_print};
 }
 #[cfg(not(feature = "run-hitl"))]
 use panic_halt as _;
 
+// TODO: Move to external module
 pub mod eredin_types{
   pub struct Odometry {
     pub pose:     [f32; 7], // x, y, z, qw, qx, qy, qz
@@ -18,6 +18,7 @@ pub mod eredin_types{
 }
 
 
+// RTIC imports
 use rtic::app;
 use rtic_monotonics::systick::prelude::*;
 
@@ -37,8 +38,12 @@ use stm32h7xx_hal::{
   stm32::UART4,
   spi,
   spi::SpiExt,
-  //block,
 };
+
+
+// Eredin imports
+pub mod tasks;
+use crate::tasks::minimal::basic_led;
 
 systick_monotonic!(Mono, 1000);
 
@@ -52,9 +57,7 @@ mod app {
       led_g:    PA1<Output<PushPull>>,
       led_b:    PA2<Output<PushPull>>,
       serial1:   stm32h7xx_hal::serial::Serial<USART3>,
-      serial2:   stm32h7xx_hal::serial::Serial<UART4>,
-      dt:       u32, 
-      odometry: eredin_types::Odometry, 
+      _serial2:   stm32h7xx_hal::serial::Serial<UART4>,
       spi:      stm32h7xx_hal::spi::Spi<stm32h7xx_hal::stm32::SPI1, stm32h7xx_hal::spi::Enabled, u8>,
       // alternate 
       //cs_baro:  PF13<Output<PushPull>>, // Chip select for barometer
@@ -63,8 +66,6 @@ mod app {
     }
     #[local]
     struct Local {
-      read_data: [u8; 64],
-      idx: u8,
       rtt_channel: Option<rtt_target::DownChannel>,
     }
 
@@ -150,7 +151,7 @@ mod app {
           .serial((tx1, rx1), 115_200.bps(), ccdr.peripheral.USART3, &ccdr.clocks)
           .unwrap();
 
-      let mut serial2 = dp
+      let mut _serial2 = dp
           .UART4
           // pass pins uart to explicitly call uart instead of usart
           //.serial((tx2, rx2), 115_200.bps(), ccdr.peripheral.UART4, &ccdr.clocks)
@@ -158,7 +159,7 @@ mod app {
           .unwrap();
 
       serial1.listen(stm32h7xx_hal::serial::Event::Rxne);
-      serial2.listen(stm32h7xx_hal::serial::Event::Rxne);
+      _serial2.listen(stm32h7xx_hal::serial::Event::Rxne);
 
       //writeln!(serial, "Eredin> Configuring SPI...\r").unwrap();
       //let sck = gpioa.pa5.into_alternate(); // SCK
@@ -216,24 +217,13 @@ mod app {
         &ccdr.clocks,
       );
 
-
-      let dt = 0; // Initialize dt
-
       // Greet before spinning
       //writeln!(serial, "Eredin> Starting Scheduler...\r").unwrap();
 
       // Schedule software tasks
-      //task_telemetry::spawn().ok();
-      //task_compute_control::spawn().ok(); // Actual task lol
-      task_baro::spawn().ok();
-      task_gyro::spawn().ok();
-      let read_data: [u8; 64] = [0; 64]; 
-      let idx: u8 = 0;
-
-      let odometry: eredin_types::Odometry = eredin_types::Odometry {
-        pose: [0.0; 7], 
-        velocity: [0.0; 6], 
-      };
+      //task_baro::spawn().ok();
+      //task_gyro::spawn().ok();
+      basic_led::spawn().ok();
 
       // Software task for rtt demo
       #[cfg(feature = "run-hitl")]
@@ -249,19 +239,21 @@ mod app {
           led_g,
           led_b,
           serial1,
-          serial2,
-          dt,
-          odometry,
+          _serial2,
           spi: spi_if, 
           cs_baro,
           cs_gyro,
         },
         Local {
-          read_data,
-          idx,
           rtt_channel,
         },
       )
+  }
+
+  // External tasks
+  extern "Rust" {
+    #[task(shared = [led_r])]
+    async fn basic_led(con: basic_led::Context);
   }
 
   //#[task(shared = [spi, serial1, cs_baro])]
@@ -459,132 +451,19 @@ mod app {
       Mono::delay(500.millis()).await;
     }
   }
-
-  #[task(binds = UART4, shared = [serial2, serial1, led_r], local = [read_data, idx])]
-  fn task_receive(con: task_receive::Context) {
-    let _serial1_if = con.shared.serial1; 
-    let _serial2_if = con.shared.serial2;
-    let _led_r      = con.shared.led_r;
     
-    //let byte = serial2_if.lock(|serial2_if| {
-    //  serial2_if.read()
-    //});
-
-    //led_r.lock(|led| {
-    //    led.toggle();
-    //});
-
-    /*serial1_if.lock(|serial1_if| {
-      serial1_if.write_str("Interrupt> UART4 RX interrupt\r").ok();
-    });*/
-
-    //let mut ifs = (serial1_if, serial2_if, led_r);
-    
-
-    }
-    
-  #[task(shared = [led_b, dt, odometry], local = [rtt_channel])]
+  #[task(shared = [led_b], local = [rtt_channel])]
   async fn task_rtt_receive(con: task_rtt_receive::Context) {
-    let mut count = 0;
     let mut led = con.shared.led_b;
-    let dt = con.shared.dt;
-    let odometry = con.shared.odometry;
     let chan_opt = con.local.rtt_channel;
     // Just asign channels, since task wont be scheduled if not in HITL mode
-    let channel = chan_opt.as_mut().expect("RTT channel not initialized");
-
-    // Locking tuple
-    let mut bq_t = (dt, odometry);
-
-    let mut rtt_buffer: [u8; 64] = [0; 64]; 
+    let _channel = chan_opt.as_mut().expect("RTT channel not initialized");
 
     loop {
       led.lock(|led| {
           led.toggle();
       });
-      bq_t.lock(|dt, _odometry| { // Try blocking read from RTT
-        // Loop until we read something
-        let read_bytes = channel.read(&mut rtt_buffer);
-
-        //rtt_target::rprintln!("RTT> Read {} bytes: {:?}", read_bytes, rtt_buffer);
-        rtt_target::rprintln!("RTT> Read {} bytes: ", read_bytes);
-        *dt += 1; // Increment dt
-        rtt_target::rprintln!("RTT> Count: {}", count);
-      });
-      //rtt_target::rprintln!("RTT> Count: {}", count);
-      count += 1;
-      Mono::delay(200.millis()).await;
     }
   }
 
-  #[task(shared = [led_g, dt, odometry])]
-  async fn task_compute_control(con: task_compute_control::Context) {
-    let mut led = con.shared.led_g;
-    let dt = con.shared.dt;
-    let odometry = con.shared.odometry;
-    let mut outputs: [f32; 4] = [0.0; 4]; 
-    // Locking tuple
-    let mut bq_t = (dt, odometry);
-    loop {
-      led.lock(|led| {
-          led.toggle();
-      });
-
-      // Timestep lock, no holding on deploy, holding by rtt receive in HITL
-      //(dt, odometry).lock(|dt, odometry| {
-      bq_t.lock(|dt, odometry| {
-        outputs[0] = odometry.pose[0] + (*dt as f32) * 0.001; // Example computation
-        outputs[1] = odometry.pose[1] + (*dt as f32) * 0.001; 
-        outputs[2] = odometry.pose[2] + (*dt as f32) * 0.001;
-
-        #[cfg(feature = "run-hitl")]
-        {
-          rtt_target::rprintln!("Control> dt: {}", dt); 
-          rtt_target::rprintln!("Control> Outputs: {:?}", outputs);
-        }
-
-      });
-
-      Mono::delay(100.millis()).await;
-    }
-  }
-
-  //#[task(shared = [serial1, led_g, led_b, odometry])]
-  #[task(shared = [led_g, led_b])]
-  async fn task_telemetry(con: task_telemetry::Context) {
-    let ledg = con.shared.led_g;
-    let ledb = con.shared.led_b;
-    let mut qk = (ledg, ledb);
-
-    loop {
-      qk.lock(|ledg, ledb| {
-          ledg.set_low();
-          ledb.set_low();
-      });
-
-      Mono::delay(100.millis()).await;
-
-      qk.lock(|ledg, ledb| {
-          ledg.set_high();
-          ledb.set_high();
-      });
-
-      Mono::delay(100.millis()).await;
-
-      qk.lock(|ledg, ledb| {
-          ledg.set_low();
-          ledb.set_low();
-      });
-
-      Mono::delay(100.millis()).await;
-
-      qk.lock(|ledg, ledb| {
-          ledg.set_high();
-          ledb.set_high();
-      });
-
-      Mono::delay(1_900.millis()).await;
-
-    }
-  }
 }
