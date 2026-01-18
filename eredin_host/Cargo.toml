@@ -1,0 +1,14 @@
+[package]
+name = "eredin_host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+probe-rs = "0.31"
+
+# Optional: for better error handling
+anyhow = "1.0"
+
+# Optional: for logging
+env_logger = "0.11"
+log = "0.4"

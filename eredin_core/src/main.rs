@@ -44,6 +44,8 @@ use stm32h7xx_hal::{
 // Eredin imports
 pub mod tasks;
 use crate::tasks::minimal::basic_led;
+use crate::tasks::minimal::task_rtt_receive;
+use rtt_target::ChannelMode;
 
 systick_monotonic!(Mono, 1000);
 
@@ -86,14 +88,14 @@ mod app {
         let rtt_channels = rtt_target::rtt_init! {
           up: {
             0: {
-              size: 512, 
+              size: 1024, 
               name: "Terminal"
             }
           }
           down: {
             0: {
               size: 64, 
-              mode: rtt_target::ChannelMode::BlockIfFull,
+              mode: ChannelMode::NoBlockSkip,
               name: "Terminal"
             }
           }
@@ -229,7 +231,7 @@ mod app {
       #[cfg(feature = "run-hitl")]
       {
         rtt_target::rprintln!("RTT> Starting RTT task...");
-        //task_rtt_receive::spawn().ok();
+        task_rtt_receive::spawn().ok();
       }
 
       // Resources for tasks
@@ -254,6 +256,8 @@ mod app {
   extern "Rust" {
     #[task(shared = [led_r])]
     async fn basic_led(con: basic_led::Context);
+    #[task(shared = [led_b], local = [rtt_channel])]
+    async fn task_rtt_receive(con: task_rtt_receive::Context);
   }
 
   //#[task(shared = [spi, serial1, cs_baro])]
@@ -451,19 +455,4 @@ mod app {
       Mono::delay(500.millis()).await;
     }
   }
-    
-  #[task(shared = [led_b], local = [rtt_channel])]
-  async fn task_rtt_receive(con: task_rtt_receive::Context) {
-    let mut led = con.shared.led_b;
-    let chan_opt = con.local.rtt_channel;
-    // Just asign channels, since task wont be scheduled if not in HITL mode
-    let _channel = chan_opt.as_mut().expect("RTT channel not initialized");
-
-    loop {
-      led.lock(|led| {
-          led.toggle();
-      });
-    }
-  }
-
 }

@@ -1,0 +1,8 @@
+[default.rtt]
+enabled = true
+
+[[default.rtt.channels]]
+channel = 0
+name = "Terminal"
+# This tells probe-rs to treat this as an interactive terminal
+type = "Console"
