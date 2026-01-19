@@ -83,10 +83,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // New poc, send 7 f32 values to down channel 0 and read from up channel 1
         // Data to send to the target
-        let mut data_to_send: [u8; 30] = [0; 30]; // 7 f32 values
+        let mut data_to_send: [u8; 35] = [0; 35]; // 28 for 7 f32 values, 3 for header and 2 separators, 4 for msg_counter
         let mut odometry_values: [f32; 7] = [1.1, 2.2, -1.1, 1.0, 0.0, 0.0, 0.0]; // Random linear pose, unit quaternion 
-        // We should send 28 bytes, but start with '@' as a header, and '$' as separator between position and orientation
-        // So the final data format is: [ '@', pos_x, pos_y, pos_z, '$', quat_x, quat_y, quat_z, quat_w ]
+        // We should send 35 bytes, with header, counter, separator, position, separator, quaternion
+        // Format: @ <counter> $ <pos_x> <pos_y> <pos_z> $ <quat_x> <quat_y> <quat_z> <quat_w>
+        
+        let mut msg_counter: u32 = 1;
+        let mut received_flag: bool;
         
         println!("Connected to RTT down channel {}", channel_number);
 
@@ -105,60 +108,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Prepare data to send
             data_to_send[0] = b'@'; // Header
-            for i in 0..3 {
-                let bytes = odometry_values[i].to_le_bytes();
-                data_to_send[1 + i*4..1 + (i+1)*4].copy_from_slice(&bytes);
-            }
-            data_to_send[13] = b'$'; // Separator
-            for i in 0..4 {
-                let bytes = odometry_values[3 + i].to_le_bytes();
-                data_to_send[14 + i*4..14 + (i+1)*4].copy_from_slice(&bytes);
-            }
-
+            data_to_send[1..5].copy_from_slice(&msg_counter.to_le_bytes()); // Message counter
+            data_to_send[5] = b'$'; // Separator
+            data_to_send[6..10].copy_from_slice(&odometry_values[0].to_le_bytes()); // pos_x
+            data_to_send[10..14].copy_from_slice(&odometry_values[1].to_le_bytes()); // pos_y
+            data_to_send[14..18].copy_from_slice(&odometry_values[2].to_le_bytes()); // pos_z
+            data_to_send[18] = b'$'; // Separator
+            data_to_send[19..23].copy_from_slice(&odometry_values[3].to_le_bytes()); // quat_x
+            data_to_send[23..27].copy_from_slice(&odometry_values[4].to_le_bytes()); // quat_y
+            data_to_send[27..31].copy_from_slice(&odometry_values[5].to_le_bytes()); // quat_z
+            data_to_send[31..35].copy_from_slice(&odometry_values[6].to_le_bytes()); // quat_w
             
-            // Write to down channel 0
-            let down_channel = rtt.down_channel(channel_number).unwrap();
-            match down_channel.write(&mut core, &data_to_send) {
-                Ok(bytes_written) => {
-                    println!("Wrote {} bytes to RTT down channel {}", bytes_written, channel_number);
-                    //println!("Sent odometry data: position=({:.2}, {:.2}, {:.2}), orientation=({:.2}, {:.2}, {:.2}, {:.2})",
-                    //         odometry_values[0], odometry_values[1], odometry_values[2],
-                    //         odometry_values[3], odometry_values[4], odometry_values[5], odometry_values[6]);
-                    println!("Sent odometry data: {:?}", odometry_values);
-                    if bytes_written < data_to_send.len() {
-                        println!("Warning: Only wrote {} of {} bytes (buffer might be full)",
-                                 bytes_written, data_to_send.len());
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing to RTT: {}", e);
-                    // Optionally break on error
-                    // break;
-                }
-            }
-
-
-            // Read from up channel 1, we should read only the quaternion back
-            let up_channel = rtt.up_channel(1).unwrap();
-            let mut buffer = [0u8; 16]; // Buffer for 4 f32 values
-            match up_channel.read(&mut core, &mut buffer) {
-                Ok(bytes_read) => {
-                    if bytes_read > 0 {
-                        let mut received_values: [f32; 4] = [0.0; 4];
-                        for i in 0..4 { 
-                            let byte_slice = &buffer[i*4..(i+1)*4];
-                            received_values[i] = f32::from_le_bytes(byte_slice.try_into().unwrap());
+            // Read from up channel 1, we should read the a quaternion back, but also the counter to acknowledge reception
+            // The data has the same format, but without position
+            
+            // Well loop until we get ack 
+            received_flag = false;
+            while !received_flag {
+                // First write data, to ensure target as a way to read
+                // Write to down channel 0
+                let down_channel = rtt.down_channel(channel_number).unwrap();
+                match down_channel.write(&mut core, &data_to_send) {
+                    Ok(bytes_written) => {
+                        println!("Wrote {} bytes to RTT down channel {}", bytes_written, channel_number);
+                        //println!("Sent odometry data: position=({:.2}, {:.2}, {:.2}), orientation=({:.2}, {:.2}, {:.2}, {:.2})",
+                        //         odometry_values[0], odometry_values[1], odometry_values[2],
+                        //         odometry_values[3], odometry_values[4], odometry_values[5], odometry_values[6]);
+                        println!("Sent odometry data: {:?}, with message counter {}", &odometry_values, msg_counter);
+                        if bytes_written < data_to_send.len() {
+                            println!("Warning: Only wrote {} of {} bytes (buffer might be full)",
+                                     bytes_written, data_to_send.len());
                         }
-                        println!("Received {} bytes from RTT up channel 1: {:?}", bytes_read, received_values);
+                    }
+                    Err(e) => {
+                        eprintln!("Error writing to RTT: {}", e);
+                        // Optionally break on error
+                        // break;
                     }
                 }
-                Err(e) => {
-                    eprintln!("Error reading from RTT: {}", e);
+
+                // Sleep a bit to let target process
+                thread::sleep(Duration::from_millis(10));
+
+                let up_channel = rtt.up_channel(1).unwrap();
+                let mut reception_buff: [u8; 100] = [0; 100]; //Packet is 1 header + 4 for counter + 1 separator + 16 for quaternion
+                match up_channel.read(&mut core, &mut reception_buff) {
+                    Ok(bytes_read) => {
+                      // Parse buffer in search for valid message
+                      let mut index = 0;
+                      while index + 22 <= bytes_read { 
+                          if reception_buff[index] == b'@' && reception_buff[index + 5] == b'$' {
+                              // Potential valid message found, parse it
+                              let recv_counter = u32::from_le_bytes([
+                                  reception_buff[index + 1],
+                                  reception_buff[index + 2],
+                                  reception_buff[index + 3],
+                                  reception_buff[index + 4],
+                              ]);
+                              
+                              // Check if counter matches
+                              // If matches, set received_flag to true
+                              if recv_counter == msg_counter {
+                                  received_flag = true;
+                                  println!("Acknowledged reception of message counter {}", msg_counter);
+                                  // Parse quaternion now
+                                  let mut quat: [f32; 4] = [0.0; 4];
+                                  for i in 0..4 {
+                                      quat[i] = f32::from_le_bytes([
+                                          reception_buff[index + 6 + i*4],
+                                          reception_buff[index + 7 + i*4],
+                                          reception_buff[index + 8 + i*4],
+                                          reception_buff[index + 9 + i*4],
+                                      ]);
+                                  }
+                                  println!("Received quaternion from target: ({:.4}, {:.4}, {:.4}, {:.4})",
+                                           quat[0], quat[1], quat[2], quat[3]);
+                              } else {
+                                  //println!("Received counter {} does not match sent counter {}", recv_counter, msg_counter);
+                                  // Sleep a bit before next read
+                                  thread::sleep(Duration::from_millis(10));
+                              }
+                              // Move index forward
+                              index += 22; 
+                          } else {
+                              index += 1;
+                          }
+                      }
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading from RTT: {}", e);
+                    }
                 }
             }
+            // Increment message counter
+            msg_counter = msg_counter.wrapping_add(1);
 
-
-            thread::sleep(Duration::from_secs(1));
+            // Sleep 10 ms
+            thread::sleep(Duration::from_millis(10));
         }
     } else {
         eprintln!("RTT down channel {} not found. Check target firmware configuration.", channel_number);

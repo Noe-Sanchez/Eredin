@@ -22,7 +22,7 @@ pub async fn task_rtt_receive(con: task_rtt_receive::Context<'static>) {
   let _odom = con.shared.odometry;
 
   // Just asign channels, since task wont be scheduled if not in HITL mode
-  Mono::delay(3000.millis()).await;
+  //Mono::delay(3000.millis()).await;
   rprintln!("RTT trying to initialize channel...");
   led.lock(|led| {
     led.set_low();
@@ -33,6 +33,9 @@ pub async fn task_rtt_receive(con: task_rtt_receive::Context<'static>) {
     led.set_high();
   });
   rprintln!("RTT channel initialized.");
+  
+  // We should process messages sequentially, if message is the same, dont process or send
+  let mut msg_counter: u32 = 0;
 
   loop {
    
@@ -56,47 +59,70 @@ pub async fn task_rtt_receive(con: task_rtt_receive::Context<'static>) {
       }
     });*/
 
-    // Compute axis angle representation for now, send twice in a 6x1  
     // First read odometry, will come 7x1 with f32 bytes, pose and quaternion, with '@' header and '$' separator
+    // Additionally, message will have another separator and a u32 counter at the beginning
+    // Example: @ <counter> $ <px> <py> <pz> $ <qx> <qy> <qz> <qw> 
+    // Total is 35 bytes
     
     // Read from down channel
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 120];
     let read_bytes = channel_down.read(&mut buffer);
     // Check indexes for header
-    if read_bytes > 0 {
-      // Parse message
-      for i in 0..read_bytes {
-        if buffer[i] == b'@' {
-          // Header found, parse quaternion bytes
+    
+    if read_bytes >= 35 { // Need at least a full message
+
+      led.lock(|led| led.toggle());
+      
+      let mut i = 0;
+      while i + 35 <= read_bytes {
+        // Check for valid message header and separators
+        if buffer[i] == b'@' && buffer[i + 5] == b'$' && buffer[i + 18] == b'$' {
+          // Parse counter
+          let counter = u32::from_le_bytes([
+            buffer[i + 1],
+            buffer[i + 2],
+            buffer[i + 3],
+            buffer[i + 4],
+          ]);
+           
+          // Skip if already processed
+          if counter <= msg_counter {
+            i += 35;
+            continue;
+          }
+                    
+          msg_counter = counter;
+                    
+          // Parse quaternion (skip: @ + counter(4) + $(1) + position(12) + $(1) = 19)
+          let quat_start = i + 19;
           let mut quat_bytes = [0.0f32; 4];
-
-          // Skip '@' and the 12 bytes of the linear pose
-          let quat_start = i + 1 + 12;
           for j in 0..4 {
-            let byte_index = quat_start + j * 4;
-            if byte_index + 4 <= read_bytes {
               quat_bytes[j] = f32::from_le_bytes([
-                buffer[byte_index],
-                buffer[byte_index + 1],
-                buffer[byte_index + 2],
-                buffer[byte_index + 3],
+                  buffer[quat_start + j * 4],
+                  buffer[quat_start + j * 4 + 1],
+                  buffer[quat_start + j * 4 + 2],
+                  buffer[quat_start + j * 4 + 3],
               ]);
-            }
           }
-
-          // Here we would compute the axis-angle from the quaternion
-          // For simplicity, just send back the quaternion as is for now
+          
+          // Send response
+          let mut send_buffer = [0u8; 22];
+          send_buffer[0] = b'@';
+          send_buffer[1..5].copy_from_slice(&counter.to_le_bytes());
+          send_buffer[5] = b'$';
           for j in 0..4 {
-            channel_up.write(&quat_bytes[j].to_le_bytes());
+              send_buffer[6 + j * 4..10 + j * 4]
+                  .copy_from_slice(&quat_bytes[j].to_le_bytes());
           }
-          channel_up.write(b"\n");
-          led.lock(|led| {
-            led.toggle();
-          });
+          channel_up.write(&send_buffer); 
+
+          i += 35; // Move past processed message
+        } else {
+          i += 1; // Invalid message, try next byte
         }
       }
-    }  
+    }
 
-    Mono::delay(500.millis()).await;
+    Mono::delay(10.millis()).await;
   }
 }
