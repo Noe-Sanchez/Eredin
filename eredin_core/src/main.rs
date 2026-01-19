@@ -65,20 +65,26 @@ mod app {
       //cs_baro:  PF13<Output<PushPull>>, // Chip select for barometer
       cs_baro:  PG0<Output<PushPull>>, // Chip select for barometer on alternate pin
       cs_gyro:  PF15<Output<PushPull>>, // Chip select for barometer on alternate pin
+      odometry: eredin_types::Odometry,
     }
     #[local]
     struct Local {
-      rtt_channel: Option<rtt_target::DownChannel>,
+      rtt_down_channel: Option<rtt_target::DownChannel>,
+      rtt_up_channel:   Option<rtt_target::UpChannel>,
     }
 
     #[init]
     fn init(con: init::Context) -> (Shared, Local){
       
+      // Dirty as fuck, figure out later
       #[cfg(feature = "run-hitl")]
-      let rtt_channel: Option<rtt_target::DownChannel>; 
+      let rtt_down_channel: Option<rtt_target::DownChannel>; 
+      #[cfg(feature = "run-hitl")]
+      let rtt_up_channel:   Option<rtt_target::UpChannel>;
       #[cfg(not(feature = "run-hitl"))]
-      let rtt_channel: Option<rtt_target::DownChannel> = None; 
-
+      let rtt_down_channel: Option<rtt_target::DownChannel> = None; 
+      #[cfg(not(feature = "run-hitl"))]
+      let rtt_up_channel:   Option<rtt_target::UpChannel>   = None;
 
       #[cfg(feature = "run-hitl")]
       {
@@ -91,6 +97,10 @@ mod app {
               size: 1024, 
               name: "Terminal"
             }
+            1: {
+              size: 64,
+              name: "HITL"
+            }
           }
           down: {
             0: {
@@ -100,11 +110,13 @@ mod app {
             }
           }
         };
-        rtt_channel = Some(rtt_channels.down.0);
-
-        //rtt_target::rprintln!("RTT> Running in HITL mode");
         rtt_target::set_print_channel(rtt_channels.up.0);
         rtt_target::rprintln!("RTT> Running in HITL mode");
+        
+        // Assign to tasks  
+        rtt_down_channel = Some(rtt_channels.down.0);
+        rtt_up_channel   = Some(rtt_channels.up.1);
+
       }
     
       let dp = con.device; 
@@ -227,10 +239,17 @@ mod app {
       //task_gyro::spawn().ok();
       basic_led::spawn().ok();
 
+      // Odometry init
+      let mut odometry = eredin_types::Odometry {
+        pose:     [0.0; 7],
+        velocity: [0.0; 6],
+      };
+      odometry.pose[0] = 1.0; // hamilton quaternion w=1 
+
       // Software task for rtt demo
       #[cfg(feature = "run-hitl")]
-      {
-        rtt_target::rprintln!("RTT> Starting RTT task...");
+      { 
+        rtt_target::rprintln!("RTT> Starting RTT task..."); // We dont have ownership anymore
         task_rtt_receive::spawn().ok();
       }
 
@@ -245,9 +264,11 @@ mod app {
           spi: spi_if, 
           cs_baro,
           cs_gyro,
+          odometry,
         },
         Local {
-          rtt_channel,
+          rtt_down_channel,
+          rtt_up_channel,
         },
       )
   }
@@ -256,7 +277,7 @@ mod app {
   extern "Rust" {
     #[task(shared = [led_r])]
     async fn basic_led(con: basic_led::Context);
-    #[task(shared = [led_b], local = [rtt_channel])]
+    #[task(shared = [led_b, odometry], local = [rtt_down_channel, rtt_up_channel])]
     async fn task_rtt_receive(con: task_rtt_receive::Context);
   }
 

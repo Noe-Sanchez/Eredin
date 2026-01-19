@@ -11,6 +11,7 @@ cortex-m-rt = "0.7"
 panic-halt = "1.0.0"
 rtt-target = { version = "0.6.1" }
 panic-rtt-target = { version = "0.2.0"}
+libm = "0.2.15"
 #probe-rs = "0.29.0"
 
 #stm32h7 = { version = "0.16.0", features = ["stm32h743", "rt"] }
