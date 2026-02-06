@@ -7,7 +7,7 @@ For now, custom low level control of multirotor drones in Rust. HITL support soo
 ### Eredin Core (STM32)
 ```bash
 # Install and build code
-cargo build --features run-deploy # For normal build
+cargo build                       # For normal build
 cargo build --features run-hitl   # For RTT logging
 
 # Deploy to board (using STLINKV2, needs install of probe-rs)
