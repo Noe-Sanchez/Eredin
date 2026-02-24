@@ -7,8 +7,20 @@ edition = "2024"
 probe-rs = "0.31"
 
 # Optional: for better error handling
-anyhow = "1.0"
+anyhow = {version = "1.0", features = ["backtrace"]}
 
 # Optional: for logging
 env_logger = "0.11"
 log = "0.4"
+
+# ROS2 deps
+rclrs = "*"
+std_msgs = "*"
+geometry_msgs = "*"
+nav_msgs = "*"
+#actuator_msgs = "*"
+actuator_msgs = { path = "/root/install/actuator_msgs/share/actuator_msgs/rust" }
+
+[[bin]]
+name = "eredin_bridge"
+path = "src/eredin_bridge.rs"

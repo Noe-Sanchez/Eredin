@@ -45,6 +45,8 @@ use stm32h7xx_hal::{
 pub mod tasks;
 use crate::tasks::minimal::basic_led;
 use crate::tasks::minimal::task_rtt_receive;
+
+#[cfg(feature = "run-hitl")]
 use rtt_target::ChannelMode;
 
 systick_monotonic!(Mono, 1000);
