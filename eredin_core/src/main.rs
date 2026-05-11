@@ -238,7 +238,7 @@ mod app {
 
       // Schedule software tasks
       //task_baro::spawn().ok();
-      //task_gyro::spawn().ok();
+      task_gyro::spawn().ok();
       basic_led::spawn().ok();
 
       // Odometry init
@@ -448,6 +448,10 @@ mod app {
       0x04 => 3.8 / 1000.0,       // ±125°/s  → 3.8 m°/s per LSB
       _ => 61.0 / 1000.0,         // Default: ±2000°/s
     };
+    
+    let mut angle_int_x: f32 = 0.0;
+    let mut angle_int_y: f32 = 0.0;
+    let mut angle_int_z: f32 = 0.0;
 
     loop {
       p_lock.lock(|spi, serial, cs_gyro| {
@@ -471,8 +475,13 @@ mod app {
           let gyro_y: f32 = (raw_gyro_y as f32) * GYRO_SCALE_FACTOR;
           let gyro_z: f32 = (raw_gyro_z as f32) * GYRO_SCALE_FACTOR;
 
-          writeln!(serial, "Gyro X:{:.2} Y:{:.2} Z:{:.2}\r", 
-                  gyro_x, gyro_y, gyro_z).unwrap();
+          //writeln!(serial, "Gyro X:{:.2} Y:{:.2} Z:{:.2}\r", 
+          //        gyro_x, gyro_y, gyro_z).unwrap();
+
+          // Simple euler integrateion for angle around z (yaw)
+          angle_int_z += gyro_z * 0.5; // Assuming 500 ms delay, so dt = 0.5 s
+          writeln!(serial, "HEADING: {:.2}", angle_int_z).unwrap();
+                                     
       });
 
       Mono::delay(500.millis()).await;

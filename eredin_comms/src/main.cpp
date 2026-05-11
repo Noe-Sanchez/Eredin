@@ -20,14 +20,22 @@ union px4_custom_mode {
 };
 
 // RTOS handles
-void Task_ErrorHandler ( void *pvParameters );
-void Task_WifiHandler  ( void *pvParameters );
-void Task_SendHeartbeat( void *pvParameters );
+void Task_ErrorHandler  ( void *pvParameters );
+void Task_WifiHandler   ( void *pvParameters );
+void Task_SendHeartbeat ( void *pvParameters );
+void Task_VCCommsHandler( void *pvParameters );
 
 QueueHandle_t queue_outbound;
 
+// Mock variable for mavlink testing with vc
+float mav_heading;
+HardwareSerial VCSerial(1);
+
 void setup() {
   //Serial.begin(115200, SERIAL_8N1, 16, 17); // Initialize serial communication
+  // Serial is usb
+  // VCSerial is comms with vc, on pins 16 and 17
+  VCSerial.begin(115200, SERIAL_8N1, 16, 17);
   Serial.begin(115200);
   WiFi.begin(ssid, password);
 
@@ -43,11 +51,47 @@ void setup() {
   // This is memory intensive, remove in the future
   queue_outbound = xQueueCreate(10, sizeof(mavlink_message_t));
 
-  xTaskCreate(Task_WifiHandler,   "WifiHandler",  10000, NULL, 1, NULL);
-  xTaskCreate(Task_SendHeartbeat, "SendHearbeat", 10000, NULL, 1, NULL);
+  xTaskCreate(Task_WifiHandler,    "WifiHandler",    10000, NULL, 1, NULL);
+  xTaskCreate(Task_SendHeartbeat,  "SendHearbeat",   10000, NULL, 1, NULL);
+  xTaskCreate(Task_VCCommsHandler, "VCCommsHandler", 10000, NULL, 1, NULL);
   
   vTaskDelete(NULL);
   
+}
+
+void Task_VCCommsHandler( void *pvParameters ) {
+  // Parse from vc and send via mavlink
+  mavlink_message_t msg_out;
+  uint8_t out_buf[MAVLINK_MAX_PACKET_LEN];
+  
+  while(1) {
+    /*
+    //mavlink_msg_vfr_hud_pack_chan(1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 0, 0, mav_heading, 0, 0, 0);
+    //if (xQueueSend(queue_outbound, &msg_out, 1) != pdPASS) { Serial.println("Failed to send VFR HUD message to queue!"); }
+    mavlink_msg_attitude_pack_chan(1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 0, 0, 0, mav_heading*3.14/180, 0, 0, 0);
+    if (xQueueSend(queue_outbound, &msg_out, 1) != pdPASS) { Serial.println("Failed to send attitude message to queue!"); }
+    mav_heading += 10.0;
+    if (mav_heading >= 360.0) { mav_heading = 0.0; }
+    
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+    */
+
+    // Read from VCSerial and parse for heading updates
+    if (VCSerial.available()) {
+      String line = VCSerial.readStringUntil('\n');
+      if (line.startsWith("HEADING:")) {
+	String heading_str = line.substring(8);
+        float heading = heading_str.toFloat();
+	mav_heading = heading;
+      }
+    }
+    mavlink_msg_attitude_pack_chan(1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 0, 0, 0, mav_heading*3.14/180, 0, 0, 0);
+    if (xQueueSend(queue_outbound, &msg_out, 1) != pdPASS) { Serial.println("Failed to send attitude message to queue!"); }
+
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+
+  }
+    
 }
 
 void Task_WifiHandler( void *pvParameters ) {
