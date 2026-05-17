@@ -2,8 +2,8 @@
 name = "eredin_core"
 version = "0.1.0"
 edition = "2024"
-target = "thumbv7em-none-eabihf"
-rustflags = "-C link-arg=-Tlink.x"
+#target = "thumbv7em-none-eabihf"
+#rustflags = "-C link-arg=-Tlink.x"
 
 [dependencies]
 cortex-m = { version = "0.7" , features = ["critical-section-single-core"] }

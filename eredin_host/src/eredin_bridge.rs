@@ -98,7 +98,8 @@ fn main() -> Result<(), Error> {
   let mut executor = ctx.create_basic_executor();
   let node         = executor.create_node("eredin_bridge_node")?;
 
-  let control_pub  = node.create_publisher::<actuator_msgs::msg::Actuators>("/x500_1/command/motor_speedpija")?;
+  //let control_pub  = node.create_publisher::<actuator_msgs::msg::Actuators>("/x500_1/command/motor_speedpija")?;
+  let control_pub  = node.create_publisher::<actuator_msgs::msg::Actuators>("/model/vehicle_blue/command/motor_speed")?;
 
   // Make Arc and Mutex for odom, since well access on spin and via thread
   let current_odom    = nav_msgs::msg::Odometry::default();
@@ -108,7 +109,8 @@ fn main() -> Result<(), Error> {
 
   // Register our odom subscriber
   let ros_worker       = node.create_worker::<usize>(0);
-  let _odom_subscriber = ros_worker.create_subscription::<nav_msgs::msg::Odometry, _>("/model/x500_1/odometry",
+  //let _odom_subscriber = ros_worker.create_subscription::<nav_msgs::msg::Odometry, _>("/model/x500_1/odometry",
+  let _odom_subscriber = ros_worker.create_subscription::<nav_msgs::msg::Odometry, _>("/model/vehicle_blue/odometry",
       move |msg: nav_msgs::msg::Odometry| {
           // Update current_odom with the received message
           let mut odom_lock = odom_clone_ros.lock().expect("Failed to lock odom mutex");

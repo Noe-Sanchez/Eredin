@@ -15,12 +15,17 @@ pub mod eredin_types{
     pub pose:     [f32; 7], // x, y, z, qw, qx, qy, qz
     pub velocity: [f32; 6], // vx, vy, vz, wx, wy, wz
   }
+  pub struct Actuators {
+    pub actuators: [f32;4] // t1, t2, t3, t4
+  }
 }
 
 
 // RTIC imports
 use rtic::app;
+use rtic::Mutex;
 use rtic_monotonics::systick::prelude::*;
+use rtic::mutex_prelude::*;
 
 use core::fmt::Write;
 
@@ -40,14 +45,16 @@ use stm32h7xx_hal::{
   spi::SpiExt,
 };
 
-
 // Eredin imports
 pub mod tasks;
 use crate::tasks::minimal::basic_led;
 use crate::tasks::minimal::task_rtt_receive;
+use crate::tasks::control::task_omni_control;
 
 #[cfg(feature = "run-hitl")]
 use rtt_target::ChannelMode;
+#[cfg(feature = "run-hitl")]
+use rtt_target::rprintln;
 
 systick_monotonic!(Mono, 1000);
 
@@ -67,7 +74,8 @@ mod app {
       //cs_baro:  PF13<Output<PushPull>>, // Chip select for barometer
       cs_baro:  PG0<Output<PushPull>>, // Chip select for barometer on alternate pin
       cs_gyro:  PF15<Output<PushPull>>, // Chip select for barometer on alternate pin
-      odometry: eredin_types::Odometry,
+      odometry:  eredin_types::Odometry,
+      actuators: eredin_types::Actuators,
     }
     #[local]
     struct Local {
@@ -238,21 +246,32 @@ mod app {
 
       // Schedule software tasks
       //task_baro::spawn().ok();
-      task_gyro::spawn().ok();
+      //task_gyro::spawn().ok();
       basic_led::spawn().ok();
+      task_omni_control::spawn().ok();
 
       // Odometry init
       let mut odometry = eredin_types::Odometry {
         pose:     [0.0; 7],
         velocity: [0.0; 6],
       };
-      odometry.pose[0] = 1.0; // hamilton quaternion w=1 
+      odometry.pose[3] = 1.0; // hamilton quaternion w=1 
+      
+      let actuators = eredin_types::Actuators {
+        actuators: [0.0; 4],
+      };
 
       // Software task for rtt demo
       #[cfg(feature = "run-hitl")]
       { 
         rtt_target::rprintln!("RTT> Starting RTT task..."); // We dont have ownership anymore
         task_rtt_receive::spawn().ok();
+      }
+
+      // If not hitl, spawn sensors
+      #[cfg(not(feature = "run-hitl"))]
+      {
+        task_gyro::spawn().ok();
       }
 
       // Resources for tasks
@@ -267,6 +286,7 @@ mod app {
           cs_baro,
           cs_gyro,
           odometry,
+          actuators,
         },
         Local {
           rtt_down_channel,
@@ -279,8 +299,10 @@ mod app {
   extern "Rust" {
     #[task(shared = [led_r])]
     async fn basic_led(con: basic_led::Context);
-    #[task(shared = [led_b, odometry], local = [rtt_down_channel, rtt_up_channel])]
+    #[task(shared = [led_b, odometry, actuators], local = [rtt_down_channel, rtt_up_channel])]
     async fn task_rtt_receive(con: task_rtt_receive::Context);
+    #[task(shared = [odometry, actuators])]
+    async fn task_omni_control(con: task_omni_control::Context);
   }
 
   //#[task(shared = [spi, serial1, cs_baro])]
@@ -449,8 +471,8 @@ mod app {
       _ => 61.0 / 1000.0,         // Default: ±2000°/s
     };
     
-    let mut angle_int_x: f32 = 0.0;
-    let mut angle_int_y: f32 = 0.0;
+    let mut _angle_int_x: f32 = 0.0;
+    let mut _angle_int_y: f32 = 0.0;
     let mut angle_int_z: f32 = 0.0;
 
     loop {
@@ -471,9 +493,9 @@ mod app {
           let raw_gyro_z: i16 = i16::from_le_bytes([tx_buf_data[5], tx_buf_data[6]]); // LSB, MSB
           
           // Conversión a grados por segundo ( º/s )
-          let gyro_x: f32 = (raw_gyro_x as f32) * GYRO_SCALE_FACTOR;
-          let gyro_y: f32 = (raw_gyro_y as f32) * GYRO_SCALE_FACTOR;
-          let gyro_z: f32 = (raw_gyro_z as f32) * GYRO_SCALE_FACTOR;
+          let _gyro_x: f32 = (raw_gyro_x as f32) * GYRO_SCALE_FACTOR;
+          let _gyro_y: f32 = (raw_gyro_y as f32) * GYRO_SCALE_FACTOR;
+          let gyro_z:  f32 = (raw_gyro_z as f32) * GYRO_SCALE_FACTOR;
 
           //writeln!(serial, "Gyro X:{:.2} Y:{:.2} Z:{:.2}\r", 
           //        gyro_x, gyro_y, gyro_z).unwrap();
