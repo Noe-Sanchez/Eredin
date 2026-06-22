@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
+#include <esp_wifi.h>
 #include "secrets.h"
 #include "common/mavlink.h"
 
@@ -47,13 +48,14 @@ void setup() {
   }
 
   Serial.println("Starting RTOS");
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
   // This is memory intensive, remove in the future
   queue_outbound = xQueueCreate(10, sizeof(mavlink_message_t));
 
-  xTaskCreate(Task_WifiHandler,    "WifiHandler",    10000, NULL, 1, NULL);
-  xTaskCreate(Task_SendHeartbeat,  "SendHearbeat",   10000, NULL, 1, NULL);
-  xTaskCreate(Task_VCCommsHandler, "VCCommsHandler", 10000, NULL, 1, NULL);
+  xTaskCreatePinnedToCore(Task_WifiHandler,    "WifiHandler",    4096, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(Task_SendHeartbeat,  "SendHearbeat",   2048, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(Task_VCCommsHandler, "VCCommsHandler", 4096, NULL, 2, NULL, 1);
   
   vTaskDelete(NULL);
   
@@ -65,29 +67,37 @@ void Task_VCCommsHandler( void *pvParameters ) {
   uint8_t out_buf[MAVLINK_MAX_PACKET_LEN];
   
   while(1) {
-    /*
-    //mavlink_msg_vfr_hud_pack_chan(1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 0, 0, mav_heading, 0, 0, 0);
-    //if (xQueueSend(queue_outbound, &msg_out, 1) != pdPASS) { Serial.println("Failed to send VFR HUD message to queue!"); }
-    mavlink_msg_attitude_pack_chan(1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 0, 0, 0, mav_heading*3.14/180, 0, 0, 0);
-    if (xQueueSend(queue_outbound, &msg_out, 1) != pdPASS) { Serial.println("Failed to send attitude message to queue!"); }
-    mav_heading += 10.0;
-    if (mav_heading >= 360.0) { mav_heading = 0.0; }
-    
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-    */
-
-    // Read from VCSerial and parse for heading updates
     if (VCSerial.available()) {
-      String line = VCSerial.readStringUntil('\n');
-      if (line.startsWith("HEADING:")) {
-	String heading_str = line.substring(8);
-        float heading = heading_str.toFloat();
-	mav_heading = heading;
+      char buf[128];
+      // Read bytes directly into a buffer instead of a String object
+      size_t len = VCSerial.readBytesUntil('\n', buf, sizeof(buf) - 1);
+      buf[len] = '\0'; // Null-terminate the array
+
+      if (strncmp(buf, "LAT:", 4) == 0) {
+        double lat_double, lon_double;
+        
+        // sscanf parses the variables out of the format directly
+        if (sscanf(buf, "LAT: %lf | LON: %lf", &lat_double, &lon_double) == 2) {
+          
+          int32_t lat = (int32_t)(lat_double * 10000000.0);
+          int32_t lon = (int32_t)(lon_double * 10000000.0);
+
+          mavlink_message_t msg_out;
+          mavlink_msg_global_position_int_pack_chan(
+            1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 
+            0, lat, lon, 0, 0, 0, 0, 0, 0
+          );
+          
+          // Don't wait for the queue to clear here, just fail fast if full
+          if (xQueueSend(queue_outbound, &msg_out, 0) != pdPASS) { 
+            Serial.println("Queue full! Dropped GPS point."); 
+          }
+        } else {
+          Serial.println("Error: Malformed GPS string received.");
+        }
       }
     }
-    mavlink_msg_attitude_pack_chan(1, MAV_COMP_ID_AUTOPILOT1, MAVLINK_COMM_0, &msg_out, 0, 0, 0, mav_heading*3.14/180, 0, 0, 0);
-    if (xQueueSend(queue_outbound, &msg_out, 1) != pdPASS) { Serial.println("Failed to send attitude message to queue!"); }
-
+	
     vTaskDelay(200 / portTICK_PERIOD_MS);
 
   }
@@ -110,8 +120,16 @@ void Task_WifiHandler( void *pvParameters ) {
 
   bool handled_command = false;
   while(1) {
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.disconnect();
+      WiFi.reconnect();
+      vTaskDelay(1000 / portTICK_PERIOD_MS); // Give it a second to reconnect
+      continue; // Skip the rest of the loop until reconnected
+    }
     // Process sending first
-    if(xQueueReceive(queue_outbound, &msg_out, 1) == pdPASS) {
+    while(xQueueReceive(queue_outbound, &msg_out, 0) == pdPASS) {
+      //udp.beginPacket("10.34.223.244", 14550);
+      //udp.beginPacket("10.4.167.20", 14550);
       udp.beginPacket("10.42.0.1", 14550);
       out_len = mavlink_msg_to_send_buffer(out_buf, &msg_out);
       udp.write(out_buf, out_len);

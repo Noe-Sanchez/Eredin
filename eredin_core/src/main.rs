@@ -27,7 +27,10 @@ use rtic::Mutex;
 use rtic_monotonics::systick::prelude::*;
 use rtic::mutex_prelude::*;
 
+// General imports
 use core::fmt::Write;
+use nalgebra as na;
+use libm;
 
 use stm32h7xx_hal::{
   prelude::*,
@@ -302,7 +305,7 @@ mod app {
     #[task(shared = [led_b, odometry, actuators], local = [rtt_down_channel, rtt_up_channel])]
     async fn task_rtt_receive(con: task_rtt_receive::Context);
     #[task(shared = [odometry, actuators])]
-    async fn task_omni_control(con: task_omni_control::Context);
+    async fn task_mc_control(con: task_mc_control::Context);
   }
 
   //#[task(shared = [spi, serial1, cs_baro])]

@@ -151,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 thread::sleep(Duration::from_millis(10));
 
                 let up_channel = rtt.up_channel(1).unwrap();
-                let mut reception_buff: [u8; 100] = [0; 100]; //Packet is 1 header + 4 for counter + 1 separator + 16 for quaternion
+                let mut reception_buff: [u8; 100] = [0; 100]; //Packet is 1 header + 4 for counter + 1 separator + 16 for actuators 
                 match up_channel.read(&mut core, &mut reception_buff) {
                     Ok(bytes_read) => {
                       // Parse buffer in search for valid message
