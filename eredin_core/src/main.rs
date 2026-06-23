@@ -53,11 +53,13 @@ pub mod tasks;
 use crate::tasks::minimal::basic_led;
 use crate::tasks::minimal::task_rtt_receive;
 use crate::tasks::control::task_omni_control;
+use crate::tasks::control::task_mc_control;
+use crate::tasks::control::task_orbital_control;
 
 #[cfg(feature = "run-hitl")]
 use rtt_target::ChannelMode;
-#[cfg(feature = "run-hitl")]
-use rtt_target::rprintln;
+
+use rtt_target::rprintln; // Should this be imported?
 
 systick_monotonic!(Mono, 1000);
 
@@ -250,8 +252,10 @@ mod app {
       // Schedule software tasks
       //task_baro::spawn().ok();
       //task_gyro::spawn().ok();
-      basic_led::spawn().ok();
-      task_omni_control::spawn().ok();
+      //basic_led::spawn().ok();
+      //task_omni_control::spawn().ok();
+      task_led_debug::spawn().ok();
+      task_mc_control::spawn().ok();
 
       // Odometry init
       let mut odometry = eredin_types::Odometry {
@@ -304,8 +308,43 @@ mod app {
     async fn basic_led(con: basic_led::Context);
     #[task(shared = [led_b, odometry, actuators], local = [rtt_down_channel, rtt_up_channel])]
     async fn task_rtt_receive(con: task_rtt_receive::Context);
+    #[task(shared = [odometry, actuators, serial1])]
+    async fn task_orbital_control(con: task_orbital_control::Context);
+    #[task(shared = [odometry, actuators])]
+    async fn task_omni_control(con: task_omni_control::Context);
     #[task(shared = [odometry, actuators])]
     async fn task_mc_control(con: task_mc_control::Context);
+  }
+
+  #[task(shared = [led_r, led_g, led_b])]
+  async fn task_led_debug(con: task_led_debug::Context) {
+    let led_r = con.shared.led_r;
+    let led_g = con.shared.led_g;
+    let led_b = con.shared.led_b;
+    let mut p_lock = (led_r, led_g, led_b);
+
+    loop {
+      p_lock.lock(|led_r, led_g, led_b| {
+        led_r.set_low();
+        led_g.set_high();
+        led_b.set_high();
+      });
+      Mono::delay(1000.millis()).await;
+
+      p_lock.lock(|led_r, led_g, led_b| {
+        led_r.set_high();
+        led_g.set_low();
+        led_b.set_high();
+      });
+      Mono::delay(1000.millis()).await;
+
+      p_lock.lock(|led_r, led_g, led_b| {
+        led_r.set_high();
+        led_g.set_high();
+        led_b.set_low();
+      });
+      Mono::delay(1000.millis()).await;
+    }
   }
 
   //#[task(shared = [spi, serial1, cs_baro])]

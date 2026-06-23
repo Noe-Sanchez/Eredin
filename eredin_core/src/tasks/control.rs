@@ -1,5 +1,7 @@
 use crate::*;
 use crate::app::task_omni_control;
+use crate::app::task_mc_control;
+use crate::app::task_orbital_control;
 use eredin_types::{Odometry};
 
 // For docs, types are
@@ -15,13 +17,13 @@ pub mod eredin_types{
 }
 */
 
-pub async fn task_mc_control(con: task_omni_control::Context<'static>) {
+pub async fn task_mc_control(con: task_mc_control::Context<'static>) {
   let odom = con.shared.odometry;
   let acts = con.shared.actuators;
   let mut p_lock = (odom, acts);
 
   loop {
-    p_lock.lock(|odom, acts| {
+    p_lock.lock(|_odom, acts| {
       // For now, just set actuators to zero
       for i in 0..4 {
         acts.actuators[i] = 0.0;
@@ -80,7 +82,7 @@ pub async fn task_omni_control(con: task_omni_control::Context<'static>) {
   }
 }
 
-pub async fn task_orbital_control(con: task_omni_control::Context<'static>) {
+pub async fn task_orbital_control(con: task_orbital_control::Context<'static>) {
   let odom = con.shared.odometry;
   let acts = con.shared.actuators;
   let mut p_lock = (odom, acts);
